@@ -185,7 +185,7 @@ Outputs are written to `outputs/`:
 
 - `per_run_results.csv`: one row per strategy run
 - `summary.csv`: grouped aggregate metrics
-- `success_rate_matrix.csv`: exact attack-drone count by defense-drone count
+- `success_rate_matrix.csv`: defense-drone count by attack-drone bucket
   success-rate matrix for each strategy
 - `run_status.log`: timestamped start, per-scenario, per-strategy, and finish
   status entries

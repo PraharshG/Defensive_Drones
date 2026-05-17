@@ -822,12 +822,11 @@ def write_talking_points(
 def write_success_rate_matrix_markdown(results: list[Result], path: Path) -> None:
     grouped = group_by_strategy(results)
     strategies = ordered_strategies(results)
-    attacker_counts = sorted({result.attacker_count for result in results})
     defender_counts = sorted({result.defender_count for result in results})
     lines = [
         "# Success Rate Matrix",
         "",
-        "Rows are exact attack-drone counts. Columns are defense-drone counts. "
+        "Rows are defensive-drone counts. Columns are attack-drone count buckets. "
         "Cells are mission success rates.",
         "",
     ]
@@ -837,22 +836,22 @@ def write_success_rate_matrix_markdown(results: list[Result], path: Path) -> Non
             [
                 f"## {SHORT_LABELS[strategy]}",
                 "",
-                "| Attack drones | "
-                + " | ".join(f"{count} defense" for count in defender_counts)
+                "| Defense drones | "
+                + " | ".join(f"{bucket} attackers" for bucket in ATTACKER_BUCKET_ORDER)
                 + " |",
                 "| ---: | "
-                + " | ".join("---:" for _ in defender_counts)
+                + " | ".join("---:" for _ in ATTACKER_BUCKET_ORDER)
                 + " |",
             ]
         )
-        for attacker_count in attacker_counts:
-            row = [str(attacker_count)]
-            for defender_count in defender_counts:
+        for defender_count in defender_counts:
+            row = [str(defender_count)]
+            for attacker_bucket in ATTACKER_BUCKET_ORDER:
                 subset = [
                     result
                     for result in values
-                    if result.attacker_count == attacker_count
-                    and result.defender_count == defender_count
+                    if result.defender_count == defender_count
+                    and result.attacker_bucket == attacker_bucket
                 ]
                 row.append(f"{rate(subset) * 100:.1f}%" if subset else "")
             lines.append("| " + " | ".join(row) + " |")

@@ -120,10 +120,10 @@ def write_summary_csv(rows: list[dict[str, object]], path: Path) -> None:
 
 def write_success_rate_matrix_csv(results: list[RunResult], path: Path) -> None:
     strategies = sorted({result.strategy for result in results})
-    attacker_counts = sorted({result.attacker_count for result in results})
     defender_counts = sorted({result.defender_count for result in results})
-    fieldnames = ["strategy", "attack_drones"] + [
-        f"defense_drones_{count}" for count in defender_counts
+    attacker_buckets = ["5-10", "11-15", "16-20"]
+    fieldnames = ["strategy", "defense_drones"] + [
+        f"attack_{bucket.replace('-', '_')}" for bucket in attacker_buckets
     ]
 
     with path.open("w", newline="") as handle:
@@ -132,20 +132,20 @@ def write_success_rate_matrix_csv(results: list[RunResult], path: Path) -> None:
         )
         writer.writeheader()
         for strategy in strategies:
-            for attacker_count in attacker_counts:
+            for defender_count in defender_counts:
                 row: dict[str, object] = {
                     "strategy": strategy,
-                    "attack_drones": attacker_count,
+                    "defense_drones": defender_count,
                 }
-                for defender_count in defender_counts:
+                for attacker_bucket in attacker_buckets:
                     subset = [
                         result
                         for result in results
                         if result.strategy == strategy
-                        and result.attacker_count == attacker_count
                         and result.defender_count == defender_count
+                        and result.attacker_bucket == attacker_bucket
                     ]
-                    column = f"defense_drones_{defender_count}"
+                    column = f"attack_{attacker_bucket.replace('-', '_')}"
                     if subset:
                         row[column] = round(
                             sum(result.success for result in subset) / len(subset), 4

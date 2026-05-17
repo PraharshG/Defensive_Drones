@@ -347,8 +347,8 @@ class OutputSmokeTests(unittest.TestCase):
             self.assertIn("success", rows[0])
             with success_matrix.open(newline="") as handle:
                 matrix_rows = list(csv.DictReader(handle))
-            self.assertIn("attack_drones", matrix_rows[0])
-            self.assertIn("defense_drones_2", matrix_rows[0])
+            self.assertIn("defense_drones", matrix_rows[0])
+            self.assertIn("attack_5_10", matrix_rows[0])
 
             log_text = status_log.read_text(encoding="utf-8")
             self.assertIn("START runs=5", log_text)
