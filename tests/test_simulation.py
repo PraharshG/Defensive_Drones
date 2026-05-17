@@ -234,8 +234,10 @@ class OutputSmokeTests(unittest.TestCase):
             self.assertEqual(len(results), 5 * len(STRATEGIES))
             per_run = out_dir / "per_run_results.csv"
             summary = out_dir / "summary.csv"
+            status_log = out_dir / "run_status.log"
             self.assertTrue(per_run.exists())
             self.assertTrue(summary.exists())
+            self.assertTrue(status_log.exists())
             self.assertTrue((out_dir / "success_rate_by_strategy.png").exists())
             self.assertTrue((out_dir / "success_rate_by_defender_count.png").exists())
             self.assertTrue((out_dir / "success_rate_by_attacker_count.png").exists())
@@ -246,6 +248,12 @@ class OutputSmokeTests(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
             self.assertEqual(len(rows), 5 * len(STRATEGIES))
             self.assertIn("success", rows[0])
+
+            log_text = status_log.read_text(encoding="utf-8")
+            self.assertIn("START runs=5", log_text)
+            self.assertIn("SCENARIO_START run_id=0", log_text)
+            self.assertIn("STRATEGY_DONE run_id=0", log_text)
+            self.assertIn("FINISH strategy_runs=30", log_text)
 
 
 if __name__ == "__main__":

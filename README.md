@@ -167,6 +167,8 @@ Outputs are written to `outputs/`:
 
 - `per_run_results.csv`: one row per strategy run
 - `summary.csv`: grouped aggregate metrics
+- `run_status.log`: timestamped start, per-scenario, per-strategy, and finish
+  status entries
 - `success_rate_by_strategy.png`
 - `success_rate_by_defender_count.png`
 - `success_rate_by_attacker_count.png`
@@ -220,6 +222,12 @@ Run a smaller smoke simulation:
 
 ```bash
 python -m defensive_drones.simulate --runs 10 --seed 42 --out outputs_smoke
+```
+
+Write the status log to a custom path:
+
+```bash
+python -m defensive_drones.simulate --runs 100 --seed 42 --out outputs --log outputs/status_100.log
 ```
 
 Run one strategy only:
@@ -292,7 +300,7 @@ defensive_drones/
 tests/
   test_simulation.py
 outputs/
-  generated CSV and PNG results
+  generated CSV, PNG, and run status log results
 ```
 
 ## Limitations and Future Work
