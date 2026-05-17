@@ -21,8 +21,9 @@ Each run creates one randomized 3D attack scenario:
   constant, but the model is structured so future versions can update velocity
   over time.
 - Defensive drones start near the target on a defensive ring.
-- Each defensive drone owns one angular corridor and only engages attack drones
-  inside that corridor.
+- Each defensive drone has an angular corridor label. Corridor strategies obey
+  those labels; global strategies ignore them so any defender can engage any
+  attack drone.
 
 The simulation has no hard time deadline. A run ends when either all attack
 drones are down or at least one live attack drone reaches the target.
@@ -73,11 +74,12 @@ angle = atan2(z, y)
 ```
 
 The full circle is split into one sector per defender. This creates hard
-ownership: defender `i` can only target attackers whose lateral angle falls in
-corridor `i`.
+ownership for corridor-restricted strategies: defender `i` can only target
+attackers whose lateral angle falls in corridor `i`.
 
 This keeps the first version simple and makes strategy comparison easier because
-the assignment problem is local to each defender's corridor.
+the assignment problem can be tested both with local corridor ownership and with
+global target allocation.
 
 ### Sensing
 
@@ -115,7 +117,9 @@ the target between discrete updates.
 
 ### Strategies
 
-The simulator compares three strategies on the same randomized scenarios:
+The simulator compares six strategies on the same randomized scenarios. The
+first three obey corridor ownership; the `_global` variants remove corridor
+ownership and allow any defender to target any live attacker.
 
 1. `optimized`
    - Uses receding-horizon assignment.
@@ -124,6 +128,7 @@ The simulator compares three strategies on the same randomized scenarios:
      matching.
    - Scores targets by conservative rendezvous time plus target deadline risk.
    - Keeps a defender locked on a near-capture target to preserve dwell time.
+   - Only considers attackers inside the defender's corridor.
 
 2. `nearest`
    - Each defender chooses the nearest live attacker in its corridor.
@@ -136,13 +141,27 @@ The simulator compares three strategies on the same randomized scenarios:
    - This prioritizes imminent threats but can underperform when it causes long
      pursuit paths.
 
+4. `optimized_global`
+   - Same assignment objective as `optimized`, but it removes corridor limits.
+   - Any defender can be assigned to any live attacker.
+   - Near-capture lock also ignores corridors so a defender does not abandon a
+     dwell capture after crossing sector boundaries.
+
+5. `nearest_global`
+   - Same as `nearest`, but searches all live attackers rather than only the
+     defender's corridor.
+
+6. `earliest_deadline_global`
+   - Same as `earliest_deadline`, but searches all live attackers rather than
+     only the defender's corridor.
+
 The term "optimized" here means optimized under this simplified simulation
 model. It is not a proof of global optimality in real-world conditions.
 
 ## Outputs
 
-The default run evaluates 1000 randomized scenarios across all three strategies,
-for 3000 strategy runs total.
+The default run evaluates 1000 randomized scenarios across all six strategies,
+for 6000 strategy runs total.
 
 Outputs are written to `outputs/`:
 
@@ -206,13 +225,13 @@ python -m defensive_drones.simulate --runs 10 --seed 42 --out outputs_smoke
 Run one strategy only:
 
 ```bash
-python -m defensive_drones.simulate --runs 100 --seed 42 --out outputs_optimized --strategies optimized
+python -m defensive_drones.simulate --runs 100 --seed 42 --out outputs_optimized --strategies optimized_global
 ```
 
 Run multiple selected strategies:
 
 ```bash
-python -m defensive_drones.simulate --runs 100 --seed 42 --out outputs_compare --strategies optimized nearest
+python -m defensive_drones.simulate --runs 100 --seed 42 --out outputs_compare --strategies optimized optimized_global nearest_global
 ```
 
 ## Run Tests
@@ -228,8 +247,8 @@ Or without activating the environment:
 ```
 
 The tests cover deterministic scenario generation, independent attacker speeds,
-corridor assignment, dwell-time kill logic, target breach detection, and output
-artifact generation.
+corridor assignment, global strategy assignment, dwell-time kill logic, target
+breach detection, and output artifact generation.
 
 ## Current Baseline Result
 
@@ -239,19 +258,25 @@ The committed `outputs/` directory was generated with:
 .venv/bin/python -m defensive_drones.simulate --runs 1000 --seed 42 --out outputs
 ```
 
-Overall aggregate results from that run:
+Overall aggregate results from the latest committed run:
 
 | Strategy | Runs | Success rate | Average kills | Average breaches |
 | --- | ---: | ---: | ---: | ---: |
+| optimized_global | 1000 | 0.026 | 2.211 | 0.991 |
+| nearest_global | 1000 | 0.008 | 1.990 | 1.012 |
 | optimized | 1000 | 0.012 | 1.696 | 1.007 |
 | nearest | 1000 | 0.012 | 1.685 | 1.007 |
+| earliest_deadline_global | 1000 | 0.008 | 0.721 | 1.005 |
 | earliest_deadline | 1000 | 0.010 | 0.720 | 1.006 |
 
 The low success rates are expected under the current default assumptions: hard
-corridor ownership, 5-20 attackers, 2-5 defenders, constant attacker motion
-toward the target, and a strict 3-second dwell requirement. The optimized
-strategy is slightly better than the nearest baseline on average kills in this
-specific run, while success rate remains nearly identical.
+corridor ownership for the original strategies, 5-20 attackers, 2-5 defenders,
+constant attacker motion toward the target, and a strict 3-second dwell
+requirement. The global strategies test how much that corridor ownership
+constraint contributes to the low success rate. In this run,
+`optimized_global` produced the best result, raising success rate from `0.012`
+for corridor-restricted `optimized` to `0.026` and increasing average kills from
+`1.696` to `2.211`.
 
 ## Project Layout
 

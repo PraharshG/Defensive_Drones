@@ -7,7 +7,14 @@ from defensive_drones.geometry import norm, time_to_target
 from defensive_drones.model import Observation, Scenario, SimulationConfig
 
 
-STRATEGIES = ("optimized", "nearest", "earliest_deadline")
+STRATEGIES = (
+    "optimized",
+    "nearest",
+    "earliest_deadline",
+    "optimized_global",
+    "nearest_global",
+    "earliest_deadline_global",
+)
 INF_COST = 1e9
 
 
@@ -22,21 +29,48 @@ def choose_assignments(
     if strategy not in STRATEGIES:
         raise ValueError(f"Unknown strategy: {strategy}")
 
+    base_strategy = _base_strategy(strategy)
+    use_corridors = not strategy.endswith("_global")
     assignments: dict[int, int] = {}
     held_defenders = _hold_near_capture_assignments(
-        scenario, observations, previous_assignments, dwell_times, assignments
+        scenario,
+        observations,
+        previous_assignments,
+        dwell_times,
+        assignments,
+        use_corridors,
     )
 
-    if strategy == "nearest":
-        _assign_nearest(scenario, observations, assignments, held_defenders)
-    elif strategy == "earliest_deadline":
+    if base_strategy == "nearest":
+        _assign_nearest(
+            scenario, observations, assignments, held_defenders, use_corridors
+        )
+    elif base_strategy == "earliest_deadline":
         _assign_earliest_deadline(
-            scenario, observations, config, assignments, held_defenders
+            scenario,
+            observations,
+            config,
+            assignments,
+            held_defenders,
+            use_corridors,
         )
     else:
-        _assign_optimized(scenario, observations, config, assignments, held_defenders)
+        _assign_optimized(
+            scenario,
+            observations,
+            config,
+            assignments,
+            held_defenders,
+            use_corridors,
+        )
 
     return assignments
+
+
+def _base_strategy(strategy: str) -> str:
+    if strategy.endswith("_global"):
+        return strategy.removesuffix("_global")
+    return strategy
 
 
 def _hold_near_capture_assignments(
@@ -45,6 +79,7 @@ def _hold_near_capture_assignments(
     previous_assignments: dict[int, int],
     dwell_times: np.ndarray,
     assignments: dict[int, int],
+    use_corridors: bool,
 ) -> set[int]:
     held_defenders: set[int] = set()
     live_ids = {attacker.id for attacker in scenario.attackers if attacker.alive}
@@ -54,7 +89,7 @@ def _hold_near_capture_assignments(
         if attacker_id not in live_ids or attacker_id not in observations:
             continue
         attacker = scenario.attackers[attacker_id]
-        if attacker.corridor != defender.corridor:
+        if use_corridors and attacker.corridor != defender.corridor:
             continue
         is_dwelling = dwell_times[defender.id, attacker_id] > 0.0
         is_near_capture = norm(attacker.position - defender.position) <= 20.0
@@ -66,18 +101,19 @@ def _hold_near_capture_assignments(
     return held_defenders
 
 
-def _corridor_candidates(
+def _candidate_ids(
     defender_id: int,
     scenario: Scenario,
     observations: dict[int, Observation],
+    use_corridors: bool,
 ) -> list[int]:
     defender = scenario.defenders[defender_id]
     return [
         attacker.id
         for attacker in scenario.attackers
         if attacker.alive
-        and attacker.corridor == defender.corridor
         and attacker.id in observations
+        and (not use_corridors or attacker.corridor == defender.corridor)
     ]
 
 
@@ -86,6 +122,7 @@ def _assign_nearest(
     observations: dict[int, Observation],
     assignments: dict[int, int],
     held_defenders: set[int],
+    use_corridors: bool,
 ) -> None:
     assigned_attackers = set(assignments.values())
     for defender in scenario.defenders:
@@ -93,7 +130,9 @@ def _assign_nearest(
             continue
         candidates = [
             attacker_id
-            for attacker_id in _corridor_candidates(defender.id, scenario, observations)
+            for attacker_id in _candidate_ids(
+                defender.id, scenario, observations, use_corridors
+            )
             if attacker_id not in assigned_attackers
         ]
         if not candidates:
@@ -114,6 +153,7 @@ def _assign_earliest_deadline(
     config: SimulationConfig,
     assignments: dict[int, int],
     held_defenders: set[int],
+    use_corridors: bool,
 ) -> None:
     assigned_attackers = set(assignments.values())
     target = config.target_vector
@@ -122,7 +162,9 @@ def _assign_earliest_deadline(
             continue
         candidates = [
             attacker_id
-            for attacker_id in _corridor_candidates(defender.id, scenario, observations)
+            for attacker_id in _candidate_ids(
+                defender.id, scenario, observations, use_corridors
+            )
             if attacker_id not in assigned_attackers
         ]
         if not candidates:
@@ -145,6 +187,7 @@ def _assign_optimized(
     config: SimulationConfig,
     assignments: dict[int, int],
     held_defenders: set[int],
+    use_corridors: bool,
 ) -> None:
     free_defenders = [
         defender for defender in scenario.defenders if defender.id not in held_defenders
@@ -165,7 +208,7 @@ def _assign_optimized(
     target = config.target_vector
     for row, defender in enumerate(free_defenders):
         for col, attacker in enumerate(free_attackers):
-            if attacker.corridor != defender.corridor:
+            if use_corridors and attacker.corridor != defender.corridor:
                 continue
             observation = observations[attacker.id]
             rendezvous_s = norm(observation.position - defender.position) / max(
