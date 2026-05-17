@@ -16,7 +16,7 @@ Each run creates one randomized 3D attack scenario:
 - 5-20 attack drones spawn 800-1500 m away.
 - Attack drones come from the same approximate direction, sampled inside a
   12-degree cone.
-- Each attack drone has its own sampled speed from 18-35 m/s.
+- Each attack drone has its own sampled speed from 18-25 m/s.
 - Attack drone velocity is stored as state. In this first version, speeds are
   constant, but the model is structured so future versions can update velocity
   over time.
@@ -117,9 +117,10 @@ the target between discrete updates.
 
 ### Strategies
 
-The simulator compares six strategies on the same randomized scenarios. The
-first three obey corridor ownership; the `_global` variants remove corridor
-ownership and allow any defender to target any live attacker.
+The simulator compares nine strategies on the same randomized scenarios. The
+first three obey hard corridor ownership; the `_global` variants remove corridor
+ownership entirely; the `_collab` variants keep corridors but let idle defenders
+assist overloaded neighboring corridors.
 
 1. `optimized`
    - Uses receding-horizon assignment.
@@ -155,18 +156,37 @@ ownership and allow any defender to target any live attacker.
    - Same as `earliest_deadline`, but searches all live attackers rather than
      only the defender's corridor.
 
+7. `optimized_collab`
+   - Uses the optimized corridor assignment first.
+   - If a defender's own corridor has no live attackers, that defender may
+     assist a corridor that still has unassigned attackers.
+   - Assisted assignments use the same rendezvous/deadline cost with a small
+     off-corridor collaboration penalty.
+
+8. `nearest_collab`
+   - Uses nearest-target corridor assignment first.
+   - Idle defenders with empty corridors assist overloaded corridors by
+     selecting the nearest remaining target.
+
+9. `earliest_deadline_collab`
+   - Uses earliest-deadline corridor assignment first.
+   - Idle defenders with empty corridors assist overloaded corridors by
+     selecting the most urgent remaining target.
+
 The term "optimized" here means optimized under this simplified simulation
 model. It is not a proof of global optimality in real-world conditions.
 
 ## Outputs
 
-The default run evaluates 1000 randomized scenarios across all six strategies,
-for 6000 strategy runs total.
+The default run evaluates 1000 randomized scenarios across all nine strategies,
+for 9000 strategy runs total.
 
 Outputs are written to `outputs/`:
 
 - `per_run_results.csv`: one row per strategy run
 - `summary.csv`: grouped aggregate metrics
+- `success_rate_matrix.csv`: exact attack-drone count by defense-drone count
+  success-rate matrix for each strategy
 - `run_status.log`: timestamped start, per-scenario, per-strategy, and finish
   status entries
 - `success_rate_by_strategy.png`
@@ -255,8 +275,8 @@ Or without activating the environment:
 ```
 
 The tests cover deterministic scenario generation, independent attacker speeds,
-corridor assignment, global strategy assignment, dwell-time kill logic, target
-breach detection, and output artifact generation.
+corridor assignment, global strategy assignment, collaboration behavior,
+dwell-time kill logic, target breach detection, and output artifact generation.
 
 ## Current Baseline Result
 
@@ -270,21 +290,23 @@ Overall aggregate results from the latest committed run:
 
 | Strategy | Runs | Success rate | Average kills | Average breaches |
 | --- | ---: | ---: | ---: | ---: |
-| optimized_global | 1000 | 0.026 | 2.211 | 0.991 |
-| nearest_global | 1000 | 0.008 | 1.990 | 1.012 |
-| optimized | 1000 | 0.012 | 1.696 | 1.007 |
-| nearest | 1000 | 0.012 | 1.685 | 1.007 |
-| earliest_deadline_global | 1000 | 0.008 | 0.721 | 1.005 |
-| earliest_deadline | 1000 | 0.010 | 0.720 | 1.006 |
+| optimized_global | 1000 | 0.250 | 6.379 | 0.764 |
+| optimized_collab | 1000 | 0.218 | 6.057 | 0.794 |
+| earliest_deadline_collab | 1000 | 0.211 | 6.290 | 0.803 |
+| nearest_collab | 1000 | 0.192 | 5.939 | 0.822 |
+| earliest_deadline_global | 1000 | 0.149 | 5.658 | 0.861 |
+| earliest_deadline | 1000 | 0.136 | 5.923 | 0.878 |
+| optimized | 1000 | 0.131 | 5.667 | 0.883 |
+| nearest | 1000 | 0.126 | 5.597 | 0.890 |
+| nearest_global | 1000 | 0.121 | 5.561 | 0.898 |
 
 The low success rates are expected under the current default assumptions: hard
 corridor ownership for the original strategies, 5-20 attackers, 2-5 defenders,
 constant attacker motion toward the target, and a strict 3-second dwell
-requirement. The global strategies test how much that corridor ownership
-constraint contributes to the low success rate. In this run,
-`optimized_global` produced the best result, raising success rate from `0.012`
-for corridor-restricted `optimized` to `0.026` and increasing average kills from
-`1.696` to `2.211`.
+requirement. The collaboration strategies show that corridor-first behavior can
+recover much of the benefit of full global assignment: `optimized_collab`
+improves success from `0.131` for corridor-restricted `optimized` to `0.218`,
+while `optimized_global` remains best overall at `0.250`.
 
 ## Project Layout
 

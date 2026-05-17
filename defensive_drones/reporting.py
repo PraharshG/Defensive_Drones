@@ -13,11 +13,25 @@ import matplotlib.pyplot as plt
 from defensive_drones.model import RunResult
 
 
+PLOT_COLORS = [
+    "#0072B2",
+    "#56B4E9",
+    "#009E73",
+    "#E69F00",
+    "#CC79A7",
+    "#D55E00",
+    "#4B5563",
+    "#9333EA",
+    "#0F766E",
+]
+
+
 def write_outputs(results: list[RunResult], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     write_per_run_csv(results, out_dir / "per_run_results.csv")
     summary_rows = summarize_results(results)
     write_summary_csv(summary_rows, out_dir / "summary.csv")
+    write_success_rate_matrix_csv(results, out_dir / "success_rate_matrix.csv")
     write_graphs(results, out_dir)
 
 
@@ -36,7 +50,9 @@ def write_per_run_csv(results: list[RunResult], path: Path) -> None:
         "kill_ratio",
     ]
     with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(
+            handle, fieldnames=fieldnames, lineterminator="\n"
+        )
         writer.writeheader()
         for result in results:
             writer.writerow(
@@ -95,9 +111,48 @@ def write_summary_csv(rows: list[dict[str, object]], path: Path) -> None:
         "median_completion_time_s",
     ]
     with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(
+            handle, fieldnames=fieldnames, lineterminator="\n"
+        )
         writer.writeheader()
         writer.writerows(rows)
+
+
+def write_success_rate_matrix_csv(results: list[RunResult], path: Path) -> None:
+    strategies = sorted({result.strategy for result in results})
+    attacker_counts = sorted({result.attacker_count for result in results})
+    defender_counts = sorted({result.defender_count for result in results})
+    fieldnames = ["strategy", "attack_drones"] + [
+        f"defense_drones_{count}" for count in defender_counts
+    ]
+
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=fieldnames, lineterminator="\n"
+        )
+        writer.writeheader()
+        for strategy in strategies:
+            for attacker_count in attacker_counts:
+                row: dict[str, object] = {
+                    "strategy": strategy,
+                    "attack_drones": attacker_count,
+                }
+                for defender_count in defender_counts:
+                    subset = [
+                        result
+                        for result in results
+                        if result.strategy == strategy
+                        and result.attacker_count == attacker_count
+                        and result.defender_count == defender_count
+                    ]
+                    column = f"defense_drones_{defender_count}"
+                    if subset:
+                        row[column] = round(
+                            sum(result.success for result in subset) / len(subset), 4
+                        )
+                    else:
+                        row[column] = ""
+                writer.writerow(row)
 
 
 def write_graphs(results: list[RunResult], out_dir: Path) -> None:
@@ -119,10 +174,15 @@ def _plot_success_by_strategy(results: list[RunResult], path: Path) -> None:
         for strategy in strategies
     ]
     plt.figure(figsize=(8, 5))
-    plt.bar(strategies, rates, color=["#3b82f6", "#10b981", "#f59e0b"][: len(strategies)])
+    plt.bar(
+        strategies,
+        rates,
+        color=[PLOT_COLORS[index % len(PLOT_COLORS)] for index in range(len(strategies))],
+    )
     plt.ylabel("Success rate")
     plt.ylim(0.0, 1.0)
     plt.title("Success rate by strategy")
+    plt.xticks(rotation=30, ha="right")
     plt.tight_layout()
     plt.savefig(path, dpi=150)
     plt.close()

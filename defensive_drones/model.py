@@ -19,7 +19,7 @@ class SimulationConfig:
     min_spawn_distance_m: float = 800.0
     max_spawn_distance_m: float = 1500.0
     min_attacker_speed_mps: float = 18.0
-    max_attacker_speed_mps: float = 35.0
+    max_attacker_speed_mps: float = 25.0
     defender_ring_radius_m: float = 120.0
     defender_max_speed_mps: float = 45.0
     defender_max_accel_mps2: float = 15.0

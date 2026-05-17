@@ -218,6 +218,101 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(corridor_assignment, {})
         self.assertEqual(global_assignment, {0: 0})
 
+    def test_collab_defender_keeps_own_corridor_when_targets_exist(self) -> None:
+        config = SimulationConfig()
+        scenario = Scenario(
+            seed=4,
+            defenders=[
+                Defender(0, np.zeros(3), np.zeros(3), 0),
+                Defender(1, np.zeros(3), np.zeros(3), 1),
+            ],
+            attackers=[
+                Attacker(
+                    id=0,
+                    position=np.array([100.0, 0.0, 0.0]),
+                    velocity=np.array([-20.0, 0.0, 0.0]),
+                    speed_mps=20.0,
+                    corridor=0,
+                ),
+                Attacker(
+                    id=1,
+                    position=np.array([10.0, 0.0, 0.0]),
+                    velocity=np.array([-20.0, 0.0, 0.0]),
+                    speed_mps=20.0,
+                    corridor=1,
+                ),
+            ],
+        )
+        observations = _observations_for(scenario)
+        dwell = np.zeros((2, 2), dtype=float)
+
+        assignment = choose_assignments(
+            "nearest_collab", scenario, observations, config, {}, dwell
+        )
+
+        self.assertEqual(assignment[0], 0)
+        self.assertEqual(assignment[1], 1)
+
+    def test_collab_idle_defender_assists_overloaded_corridor(self) -> None:
+        config = SimulationConfig()
+        scenario = Scenario(
+            seed=5,
+            defenders=[
+                Defender(0, np.zeros(3), np.zeros(3), 0),
+                Defender(1, np.zeros(3), np.zeros(3), 1),
+            ],
+            attackers=[
+                Attacker(
+                    id=0,
+                    position=np.array([20.0, 0.0, 0.0]),
+                    velocity=np.array([-20.0, 0.0, 0.0]),
+                    speed_mps=20.0,
+                    corridor=1,
+                ),
+                Attacker(
+                    id=1,
+                    position=np.array([30.0, 0.0, 0.0]),
+                    velocity=np.array([-20.0, 0.0, 0.0]),
+                    speed_mps=20.0,
+                    corridor=1,
+                ),
+            ],
+        )
+        observations = _observations_for(scenario)
+        dwell = np.zeros((2, 2), dtype=float)
+
+        assignment = choose_assignments(
+            "nearest_collab", scenario, observations, config, {}, dwell
+        )
+
+        self.assertEqual(set(assignment), {0, 1})
+        self.assertEqual(set(assignment.values()), {0, 1})
+        self.assertEqual(len(set(assignment.values())), len(assignment.values()))
+
+    def test_collab_near_capture_lock_can_hold_assisted_target(self) -> None:
+        config = SimulationConfig()
+        scenario = Scenario(
+            seed=6,
+            defenders=[Defender(0, np.zeros(3), np.zeros(3), 0)],
+            attackers=[
+                Attacker(
+                    id=0,
+                    position=np.array([4.0, 0.0, 0.0]),
+                    velocity=np.array([-20.0, 0.0, 0.0]),
+                    speed_mps=20.0,
+                    corridor=1,
+                )
+            ],
+        )
+        observations = _observations_for(scenario)
+        dwell = np.array([[1.0]], dtype=float)
+
+        assignment = choose_assignments(
+            "optimized_collab", scenario, observations, config, {0: 0}, dwell
+        )
+
+        self.assertEqual(assignment, {0: 0})
+
 
 class OutputSmokeTests(unittest.TestCase):
     def test_smoke_run_writes_csv_and_png_outputs(self) -> None:
@@ -234,9 +329,11 @@ class OutputSmokeTests(unittest.TestCase):
             self.assertEqual(len(results), 5 * len(STRATEGIES))
             per_run = out_dir / "per_run_results.csv"
             summary = out_dir / "summary.csv"
+            success_matrix = out_dir / "success_rate_matrix.csv"
             status_log = out_dir / "run_status.log"
             self.assertTrue(per_run.exists())
             self.assertTrue(summary.exists())
+            self.assertTrue(success_matrix.exists())
             self.assertTrue(status_log.exists())
             self.assertTrue((out_dir / "success_rate_by_strategy.png").exists())
             self.assertTrue((out_dir / "success_rate_by_defender_count.png").exists())
@@ -248,12 +345,28 @@ class OutputSmokeTests(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
             self.assertEqual(len(rows), 5 * len(STRATEGIES))
             self.assertIn("success", rows[0])
+            with success_matrix.open(newline="") as handle:
+                matrix_rows = list(csv.DictReader(handle))
+            self.assertIn("attack_drones", matrix_rows[0])
+            self.assertIn("defense_drones_2", matrix_rows[0])
 
             log_text = status_log.read_text(encoding="utf-8")
             self.assertIn("START runs=5", log_text)
             self.assertIn("SCENARIO_START run_id=0", log_text)
             self.assertIn("STRATEGY_DONE run_id=0", log_text)
-            self.assertIn("FINISH strategy_runs=30", log_text)
+            self.assertIn(f"FINISH strategy_runs={5 * len(STRATEGIES)}", log_text)
+
+
+def _observations_for(scenario: Scenario) -> dict[int, Observation]:
+    return {
+        attacker.id: Observation(
+            attacker.id,
+            attacker.position.copy(),
+            attacker.velocity.copy(),
+            attacker.corridor,
+        )
+        for attacker in scenario.attackers
+    }
 
 
 if __name__ == "__main__":
