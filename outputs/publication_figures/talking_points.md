@@ -18,12 +18,12 @@ Sample: 1000 scenarios and 9000 strategy runs.
 
 ## Figure Guide
 
-- Figure 1: `01_success_rate_by_strategy.png` - Shows which strategy most often kills all attackers before breach.
-- Figure 2: `02_mean_kill_ratio_by_strategy.png` - Normalizes kills by scenario size so mixed attacker counts can be compared.
-- Figure 3: `03_mean_kills_by_strategy.png` - Reports the absolute number of intercepted attackers before breach.
-- Figure 4: `04_success_rate_by_defender_count.png` - Shows how added defensive assets change mission outcomes.
-- Figure 5: `05_success_rate_by_attacker_load.png` - Compares strategy robustness as attacker counts grow.
-- Figure 6: `06_success_rate_heatmap.png` - Identifies operating regimes where each strategy is viable.
+- Figure 1: `01_assignment_flexibility_uplift.png` - Shows how optimized performance improves as allocation moves from rigid corridors to collaboration and global assignment.
+- Figure 2: `02_capability_envelope.png` - Maps where the strongest strategy families remain viable as attacker load rises and defender resources increase.
+- Figure 3: `03_defender_resource_scaling.png` - Shows that the strongest strategy families scale materially as additional defenders are added.
+- Figure 4: `04_paired_scenario_conversion_matrix.png` - Compares optimized global against optimized on identical scenarios to isolate true algorithmic gains.
+- Figure 5: `05_attacker_load_cliff.png` - Shows the sharp system success collapse once the swarm moves beyond the moderate-load regime.
+- Figure 6: `06_residual_failure_space.png` - Shows that the remaining failure regime is concentrated in high-load saturation cases for optimized global control.
 - Figure 7: `07_kill_ratio_distribution.png` - Shows consistency and tail behavior beyond mean performance.
 - Figure 8: `08_terminal_time_distribution.png` - Shows whether strategies delay breach or finish quickly.
 - Figure 9: `09_global_vs_corridor_success_uplift.png` - Compares hard corridors, collaborative corridors, and global assignment.
