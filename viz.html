@@ -1,0 +1,1753 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Defensive Allocation Simulator</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        :root {
+            --bg: #eef4f8;
+            --panel: rgba(255, 255, 255, 0.94);
+            --ink: #153147;
+            --muted: #5c7185;
+            --accent: #0f7a8a;
+            --accent-strong: #0a5f6c;
+            --warning: #c55a11;
+            --danger: #b9382f;
+            --lane: #d9e3ea;
+            --shadow: 0 18px 40px rgba(17, 49, 74, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            padding: 1.5rem;
+            font-family: "Avenir Next", "Segoe UI", sans-serif;
+            color: var(--ink);
+            background: radial-gradient(circle at top left, #f8fbfd 0%, #eef4f8 45%, #dde8ef 100%);
+        }
+
+        .app {
+            width: min(1120px, 100%);
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid rgba(255, 255, 255, 0.85);
+            border-radius: 20px;
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(16px);
+        }
+
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            align-items: end;
+            padding: 1.1rem 1.25rem;
+        }
+
+        .control-group {
+            flex: 1 1 220px;
+            display: flex;
+            flex-direction: column;
+            gap: 0.55rem;
+        }
+
+        label {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 0.5rem;
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
+        .control-value {
+            font-size: 1rem;
+            letter-spacing: 0;
+            text-transform: none;
+            color: var(--accent-strong);
+        }
+
+        select,
+        input[type="range"] {
+            width: 100%;
+        }
+
+        select {
+            padding: 0.75rem 0.9rem;
+            border-radius: 14px;
+            border: 1px solid #d3dde5;
+            background: #ffffff;
+            color: var(--ink);
+            font: inherit;
+        }
+
+        input[type="range"] {
+            accent-color: var(--accent);
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 0.9rem;
+            padding: 1rem 1.25rem 1.1rem;
+        }
+
+        .metric {
+            min-height: 88px;
+            padding: 0.95rem 1rem;
+            border: 1px solid #dce6ec;
+            border-radius: 16px;
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(240, 246, 249, 0.9));
+        }
+
+        .metric-label {
+            margin-bottom: 0.45rem;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
+        .metric-value {
+            font-size: 1.55rem;
+            line-height: 1.1;
+            font-weight: 700;
+            color: var(--ink);
+        }
+
+        .metric-value.status-running {
+            color: var(--accent-strong);
+        }
+
+        .metric-value.status-success {
+            color: #2c7a4b;
+        }
+
+        .metric-value.status-breach {
+            color: var(--danger);
+        }
+
+        .viz-panel {
+            padding: 1rem 1rem 1.1rem;
+        }
+
+        .viz-header {
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            align-items: flex-start;
+            padding: 0 0.35rem 0.85rem;
+        }
+
+        .viz-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+        }
+
+        .viz-copy {
+            max-width: 720px;
+            font-size: 0.95rem;
+            line-height: 1.4;
+            color: var(--muted);
+        }
+
+        svg {
+            display: block;
+            width: 100%;
+            height: auto;
+            border: 1px solid #d7e2e9;
+            border-radius: 18px;
+            background: linear-gradient(180deg, #fbfdff 0%, #f2f7fa 46%, #ebf2f6 100%);
+        }
+
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            padding: 0.9rem 0.35rem 0;
+            font-size: 0.9rem;
+            color: var(--muted);
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+        }
+
+        .swatch {
+            width: 14px;
+            height: 14px;
+            border-radius: 999px;
+        }
+
+        .swatch.assignment {
+            width: 18px;
+            height: 2px;
+            border-radius: 999px;
+            background: rgba(15, 122, 138, 0.35);
+        }
+
+        .range-axis {
+            font-size: 0.82rem;
+            fill: var(--muted);
+        }
+
+        .lane-boundary {
+            stroke: var(--lane);
+            stroke-width: 1.5;
+            stroke-dasharray: 4 8;
+        }
+
+        .lane-label {
+            font-size: 0.72rem;
+            font-weight: 700;
+            fill: var(--muted);
+            text-anchor: middle;
+        }
+
+        .assignment-link {
+            stroke: rgba(15, 122, 138, 0.28);
+            stroke-width: 2;
+        }
+
+        .defender-dot {
+            stroke: #ffffff;
+            stroke-width: 2;
+        }
+
+        .attacker-shape {
+            stroke: #ffffff;
+            stroke-width: 1.5;
+        }
+
+        .defender-label,
+        .attacker-label {
+            font-size: 0.62rem;
+            font-weight: 700;
+            fill: #ffffff;
+            text-anchor: middle;
+            dominant-baseline: middle;
+            pointer-events: none;
+        }
+
+        .target-zone {
+            fill: rgba(185, 56, 47, 0.1);
+            stroke: rgba(185, 56, 47, 0.28);
+            stroke-width: 1.5;
+        }
+
+        .target-line {
+            stroke: rgba(185, 56, 47, 0.45);
+            stroke-width: 2;
+        }
+
+        .target-label {
+            font-size: 0.76rem;
+            font-weight: 700;
+            fill: var(--danger);
+            text-anchor: end;
+        }
+
+        .caption {
+            padding: 0.1rem 0.35rem 0;
+            font-size: 0.88rem;
+            color: var(--muted);
+        }
+
+        @media (max-width: 720px) {
+            body {
+                padding: 1rem;
+            }
+
+            .viz-header {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <div class="panel controls">
+            <div class="control-group">
+                <label for="strategy">Operational Strategy</label>
+                <select id="strategy">
+                    <option value="optimized_global" selected>Optimized Global</option>
+                    <option value="optimized_collab">Optimized Collaboration</option>
+                    <option value="optimized">Optimized Corridor</option>
+                    <option value="nearest_global">Nearest Global</option>
+                    <option value="nearest_collab">Nearest Collaboration</option>
+                    <option value="nearest">Nearest Corridor</option>
+                    <option value="earliest_deadline_global">Earliest Deadline Global</option>
+                    <option value="earliest_deadline_collab">Earliest Deadline Collaboration</option>
+                    <option value="earliest_deadline">Earliest Deadline Corridor</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label for="defenders">
+                    <span>Defender Drones</span>
+                    <span class="control-value" id="defenders-value">8</span>
+                </label>
+                <input type="range" id="defenders" min="2" max="20" value="8">
+            </div>
+            <div class="control-group">
+                <label for="attackers">
+                    <span>Attacker Drones</span>
+                    <span class="control-value" id="attackers-value">15</span>
+                </label>
+                <input type="range" id="attackers" min="5" max="30" value="15">
+            </div>
+        </div>
+
+        <div class="panel metrics">
+            <div class="metric">
+                <div class="metric-label">Simulation Run</div>
+                <div class="metric-value" id="metric-run">Run 1</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Status</div>
+                <div class="metric-value status-running" id="metric-status">Running</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Completed Success Rate</div>
+                <div class="metric-value" id="metric-success">0.0%</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Current Kills</div>
+                <div class="metric-value" id="metric-kills">0 / 15</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Elapsed Time</div>
+                <div class="metric-value" id="metric-elapsed">0.0s</div>
+            </div>
+        </div>
+
+        <div class="panel viz-panel">
+            <div class="viz-header">
+                <div>
+                    <div class="viz-title">Defensive Drone Scenario Replay</div>
+                    <div class="viz-copy" id="run-summary">Corridors follow the configured defender count, the strategy selector mirrors the Python simulator, and changing any setting resets the replay stream back to run 1.</div>
+                </div>
+            </div>
+            <svg id="simulation" viewBox="0 0 960 620" aria-label="Defensive drone simulation"></svg>
+            <div class="legend">
+                <div class="legend-item"><span class="swatch" style="background: #0f7a8a;"></span>Defender</div>
+                <div class="legend-item"><span class="swatch" style="background: #f08a24;"></span>Live attacker</div>
+                <div class="legend-item"><span class="swatch" style="background: #a0acb8;"></span>Neutralized attacker</div>
+                <div class="legend-item"><span class="swatch" style="background: #b9382f;"></span>Breached attacker</div>
+                <div class="legend-item"><span class="swatch assignment"></span>Current assignment</div>
+            </div>
+            <div class="caption">The replay uses the same corridor labels, noisy observations, dwell kill rule, breach detection, and strategy families as the Python model.</div>
+        </div>
+    </div>
+
+    <script>
+        const CONFIG = Object.freeze({
+            target: [0.0, 0.0, 0.0],
+            approachConeDegrees: 12.0,
+            minSpawnDistanceM: 800.0,
+            maxSpawnDistanceM: 1500.0,
+            minAttackerSpeedMps: 18.0,
+            maxAttackerSpeedMps: 25.0,
+            defenderRingRadiusM: 120.0,
+            defenderMaxSpeedMps: 45.0,
+            defenderMaxAccelMps2: 15.0,
+            dtS: 0.25,
+            sensorPositionSigmaM: 1.0,
+            sensorVelocitySigmaMps: 0.5,
+            killRadiusM: 5.0,
+            killDwellS: 3.0,
+            targetBreachRadiusM: 5.0
+        });
+        const EPSILON = 1e-9;
+        const INF_COST = 1e9;
+        const COLLABORATION_PENALTY = 2.0;
+        const SIM_STEP_MS = 95;
+        const RUN_ADVANCE_DELAY_MS = 1100;
+
+        const svg = d3.select("#simulation");
+        const plot = { left: 42, top: 54, right: 918, bottom: 568 };
+        plot.width = plot.right - plot.left;
+        plot.height = plot.bottom - plot.top;
+
+        const laneGroup = svg.append("g");
+        const axisGroup = svg.append("g");
+        const assignmentGroup = svg.append("g");
+        const attackerGroup = svg.append("g");
+        const defenderGroup = svg.append("g");
+        const overlayGroup = svg.append("g");
+        const attackerSymbol = d3.symbol().type(d3.symbolTriangle).size(170);
+
+        const controls = {
+            strategy: document.getElementById("strategy"),
+            defenders: document.getElementById("defenders"),
+            attackers: document.getElementById("attackers"),
+            defendersValue: document.getElementById("defenders-value"),
+            attackersValue: document.getElementById("attackers-value")
+        };
+
+        const metrics = {
+            run: document.getElementById("metric-run"),
+            status: document.getElementById("metric-status"),
+            success: document.getElementById("metric-success"),
+            kills: document.getElementById("metric-kills"),
+            elapsed: document.getElementById("metric-elapsed")
+        };
+
+        const runSummary = document.getElementById("run-summary");
+
+        const state = {
+            controls: {
+                strategy: controls.strategy.value,
+                defenders: Number(controls.defenders.value),
+                attackers: Number(controls.attackers.value)
+            },
+            runNumber: 1,
+            completedRuns: [],
+            scenario: null,
+            observationRng: null,
+            dwellTimes: [],
+            assignments: {},
+            elapsedS: 0.0,
+            status: "running",
+            currentResult: null,
+            runAdvanceHandle: null,
+            accumulatorMs: 0,
+            lastFrameMs: null
+        };
+
+        function initialize() {
+            syncControlLabels();
+            resetSimulation();
+
+            d3.timer((timestampMs) => {
+                if (state.lastFrameMs === null) {
+                    state.lastFrameMs = timestampMs;
+                }
+
+                const deltaMs = timestampMs - state.lastFrameMs;
+                state.lastFrameMs = timestampMs;
+
+                if (state.status === "running") {
+                    state.accumulatorMs += deltaMs;
+                    while (state.status === "running" && state.accumulatorMs >= SIM_STEP_MS) {
+                        stepSimulation();
+                        state.accumulatorMs -= SIM_STEP_MS;
+                    }
+                }
+
+                renderScene();
+            });
+        }
+
+        function syncControlLabels() {
+            controls.defendersValue.textContent = String(state.controls.defenders);
+            controls.attackersValue.textContent = String(state.controls.attackers);
+        }
+
+        function resetSimulation() {
+            clearPendingAdvance();
+            state.runNumber = 1;
+            state.completedRuns = [];
+            startRun(1);
+        }
+
+        function startRun(runNumber) {
+            clearPendingAdvance();
+            const scenarioSeed = scenarioSeedForRun(runNumber);
+            state.runNumber = runNumber;
+            state.scenario = generateScenario(
+                scenarioSeed,
+                state.controls.defenders,
+                state.controls.attackers
+            );
+            state.observationRng = createRng(scenarioSeed);
+            state.dwellTimes = Array.from({ length: state.controls.defenders }, () =>
+                Array.from({ length: state.controls.attackers }, () => 0.0)
+            );
+            state.assignments = {};
+            state.elapsedS = 0.0;
+            state.status = "running";
+            state.currentResult = null;
+            state.accumulatorMs = 0;
+            renderArena();
+            updateMetrics();
+            renderScene();
+        }
+
+        function clearPendingAdvance() {
+            if (state.runAdvanceHandle !== null) {
+                window.clearTimeout(state.runAdvanceHandle);
+                state.runAdvanceHandle = null;
+            }
+        }
+
+        function scenarioSeedForRun(runNumber) {
+            const seedText = `42:${state.controls.defenders}:${state.controls.attackers}:${runNumber}`;
+            let hash = 2166136261;
+            for (const character of seedText) {
+                hash ^= character.charCodeAt(0);
+                hash = Math.imul(hash, 16777619);
+            }
+            return hash >>> 0;
+        }
+
+        function createRng(seed) {
+            let value = (seed >>> 0) || 1;
+            return {
+                next() {
+                    value = (value + 0x6d2b79f5) >>> 0;
+                    let mixed = Math.imul(value ^ (value >>> 15), 1 | value);
+                    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed);
+                    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+                },
+                normal(mean = 0.0, sigma = 1.0) {
+                    let u = 0.0;
+                    let v = 0.0;
+                    while (u <= Number.EPSILON) {
+                        u = this.next();
+                    }
+                    while (v <= Number.EPSILON) {
+                        v = this.next();
+                    }
+                    const magnitude = Math.sqrt(-2.0 * Math.log(u));
+                    const z0 = magnitude * Math.cos(2.0 * Math.PI * v);
+                    return mean + sigma * z0;
+                }
+            };
+        }
+
+        function randomBetween(rng, minValue, maxValue) {
+            return minValue + (maxValue - minValue) * rng.next();
+        }
+
+        function generateScenario(seed, defenderCount, attackerCount) {
+            const rng = createRng(seed);
+            return {
+                seed,
+                defenders: Array.from({ length: defenderCount }, (_, defenderId) =>
+                    makeDefender(defenderId, defenderCount)
+                ),
+                attackers: Array.from({ length: attackerCount }, (_, attackerId) =>
+                    makeAttacker(attackerId, defenderCount, rng)
+                )
+            };
+        }
+
+        function makeDefender(defenderId, defenderCount) {
+            const sectorWidth = (2.0 * Math.PI) / defenderCount;
+            const angle = (defenderId + 0.5) * sectorWidth;
+            return {
+                id: defenderId,
+                position: [
+                    0.0,
+                    CONFIG.defenderRingRadiusM * Math.cos(angle),
+                    CONFIG.defenderRingRadiusM * Math.sin(angle)
+                ],
+                velocity: [0.0, 0.0, 0.0],
+                corridor: defenderId
+            };
+        }
+
+        function makeAttacker(attackerId, defenderCount, rng) {
+            const coneRadians = (CONFIG.approachConeDegrees * Math.PI) / 180.0;
+            const cosTheta = randomBetween(rng, Math.cos(coneRadians), 1.0);
+            const sinTheta = Math.sqrt(Math.max(0.0, 1.0 - cosTheta * cosTheta));
+            const phi = randomBetween(rng, 0.0, 2.0 * Math.PI);
+            const distance = randomBetween(rng, CONFIG.minSpawnDistanceM, CONFIG.maxSpawnDistanceM);
+            const directionFromTarget = [
+                cosTheta,
+                sinTheta * Math.cos(phi),
+                sinTheta * Math.sin(phi)
+            ];
+            const speedMps = randomBetween(
+                rng,
+                CONFIG.minAttackerSpeedMps,
+                CONFIG.maxAttackerSpeedMps
+            );
+            const velocity = scaleVector(directionFromTarget, -speedMps);
+            const position = scaleVector(directionFromTarget, distance);
+            return {
+                id: attackerId,
+                position,
+                velocity,
+                speedMps,
+                corridor: corridorIndexForPosition(position, defenderCount),
+                alive: true,
+                killed: false,
+                breached: false
+            };
+        }
+
+        function stepSimulation() {
+            const scenario = state.scenario;
+            if (!scenario) {
+                return;
+            }
+            if (scenario.attackers.every((attacker) => !attacker.alive)) {
+                finalizeRun(true);
+                return;
+            }
+
+            const observations = observeAttackers(scenario, CONFIG, state.observationRng);
+            state.assignments = chooseAssignments(
+                state.controls.strategy,
+                scenario,
+                observations,
+                CONFIG,
+                state.assignments,
+                state.dwellTimes
+            );
+
+            const previousPositions = new Map();
+            for (const attacker of scenario.attackers) {
+                if (attacker.alive) {
+                    previousPositions.set(attacker.id, cloneVector(attacker.position));
+                }
+            }
+
+            advanceDefenders(scenario, observations, state.assignments, CONFIG);
+            advanceAttackers(scenario, CONFIG);
+            state.elapsedS += CONFIG.dtS;
+
+            updateDwellAndKills(scenario, state.dwellTimes, CONFIG);
+            const breached = markBreaches(scenario, previousPositions, CONFIG);
+            if (breached) {
+                finalizeRun(false);
+                return;
+            }
+            if (scenario.attackers.every((attacker) => !attacker.alive)) {
+                finalizeRun(true);
+            }
+            updateMetrics();
+        }
+
+        function finalizeRun(success) {
+            if (state.status !== "running" || !state.scenario) {
+                return;
+            }
+            const kills = state.scenario.attackers.filter((attacker) => attacker.killed).length;
+            const breaches = state.scenario.attackers.filter((attacker) => attacker.breached).length;
+            state.currentResult = {
+                runId: state.runNumber,
+                scenarioSeed: state.scenario.seed,
+                strategy: state.controls.strategy,
+                defenderCount: state.controls.defenders,
+                attackerCount: state.controls.attackers,
+                kills,
+                breaches,
+                success,
+                completionTimeS: state.elapsedS
+            };
+            state.completedRuns.push(state.currentResult);
+            state.status = success ? "success" : "breach";
+            updateMetrics();
+            renderScene();
+            state.runAdvanceHandle = window.setTimeout(() => {
+                startRun(state.runNumber + 1);
+            }, RUN_ADVANCE_DELAY_MS);
+        }
+
+        function observeAttackers(scenario, config, rng) {
+            const observations = {};
+            for (const attacker of scenario.attackers) {
+                if (!attacker.alive) {
+                    continue;
+                }
+                observations[attacker.id] = {
+                    attackerId: attacker.id,
+                    position: addVectors(
+                        attacker.position,
+                        randomNormalVector(rng, config.sensorPositionSigmaM)
+                    ),
+                    velocity: addVectors(
+                        attacker.velocity,
+                        randomNormalVector(rng, config.sensorVelocitySigmaMps)
+                    ),
+                    corridor: attacker.corridor
+                };
+            }
+            return observations;
+        }
+
+        function randomNormalVector(rng, sigma) {
+            return [
+                rng.normal(0.0, sigma),
+                rng.normal(0.0, sigma),
+                rng.normal(0.0, sigma)
+            ];
+        }
+
+        function chooseAssignments(strategy, scenario, observations, config, previousAssignments, dwellTimes) {
+            const baseStrategy = baseStrategyFor(strategy);
+            const assignmentMode = assignmentModeFor(strategy);
+            const useCorridors = assignmentMode === "corridor";
+            const assignments = {};
+            const heldDefenders = holdNearCaptureAssignments(
+                scenario,
+                observations,
+                previousAssignments,
+                dwellTimes,
+                assignments,
+                assignmentMode
+            );
+
+            if (baseStrategy === "nearest") {
+                if (assignmentMode === "collab") {
+                    assignNearestCollab(scenario, observations, assignments, heldDefenders);
+                } else {
+                    assignNearest(
+                        scenario,
+                        observations,
+                        assignments,
+                        heldDefenders,
+                        useCorridors
+                    );
+                }
+            } else if (baseStrategy === "earliest_deadline") {
+                if (assignmentMode === "collab") {
+                    assignEarliestDeadlineCollab(
+                        scenario,
+                        observations,
+                        config,
+                        assignments,
+                        heldDefenders
+                    );
+                } else {
+                    assignEarliestDeadline(
+                        scenario,
+                        observations,
+                        config,
+                        assignments,
+                        heldDefenders,
+                        useCorridors
+                    );
+                }
+            } else if (assignmentMode === "collab") {
+                assignOptimizedCollab(
+                    scenario,
+                    observations,
+                    config,
+                    assignments,
+                    heldDefenders
+                );
+            } else {
+                assignOptimized(
+                    scenario,
+                    observations,
+                    config,
+                    assignments,
+                    heldDefenders,
+                    useCorridors
+                );
+            }
+
+            return assignments;
+        }
+
+        function baseStrategyFor(strategy) {
+            if (strategy.endsWith("_global")) {
+                return strategy.slice(0, -7);
+            }
+            if (strategy.endsWith("_collab")) {
+                return strategy.slice(0, -7);
+            }
+            return strategy;
+        }
+
+        function assignmentModeFor(strategy) {
+            if (strategy.endsWith("_global")) {
+                return "global";
+            }
+            if (strategy.endsWith("_collab")) {
+                return "collab";
+            }
+            return "corridor";
+        }
+
+        function holdNearCaptureAssignments(
+            scenario,
+            observations,
+            previousAssignments,
+            dwellTimes,
+            assignments,
+            assignmentMode
+        ) {
+            const heldDefenders = new Set();
+            const liveIds = new Set(
+                scenario.attackers.filter((attacker) => attacker.alive).map((attacker) => attacker.id)
+            );
+
+            for (const defender of scenario.defenders) {
+                const attackerId = previousAssignments[defender.id];
+                if (!liveIds.has(attackerId) || !hasObservation(observations, attackerId)) {
+                    continue;
+                }
+                const attacker = scenario.attackers[attackerId];
+                if (assignmentMode === "corridor" && attacker.corridor !== defender.corridor) {
+                    continue;
+                }
+                const isDwelling = dwellTimes[defender.id][attackerId] > 0.0;
+                const isNearCapture = norm(subtractVectors(attacker.position, defender.position)) <= 20.0;
+                if (!isDwelling && !isNearCapture) {
+                    continue;
+                }
+                assignments[defender.id] = attackerId;
+                heldDefenders.add(defender.id);
+            }
+
+            return heldDefenders;
+        }
+
+        function candidateIds(defenderId, scenario, observations, useCorridors) {
+            const defender = scenario.defenders[defenderId];
+            return scenario.attackers
+                .filter((attacker) =>
+                    attacker.alive
+                    && hasObservation(observations, attacker.id)
+                    && (!useCorridors || attacker.corridor === defender.corridor)
+                )
+                .map((attacker) => attacker.id);
+        }
+
+        function assignNearest(scenario, observations, assignments, heldDefenders, useCorridors) {
+            const assignedAttackers = new Set(Object.values(assignments));
+            for (const defender of scenario.defenders) {
+                if (heldDefenders.has(defender.id)) {
+                    continue;
+                }
+                const candidates = candidateIds(defender.id, scenario, observations, useCorridors)
+                    .filter((attackerId) => !assignedAttackers.has(attackerId));
+                if (!candidates.length) {
+                    continue;
+                }
+                const targetId = minBy(
+                    candidates,
+                    (attackerId) => norm(
+                        subtractVectors(observations[attackerId].position, defender.position)
+                    )
+                );
+                assignments[defender.id] = targetId;
+                assignedAttackers.add(targetId);
+            }
+        }
+
+        function assignNearestCollab(scenario, observations, assignments, heldDefenders) {
+            assignNearest(scenario, observations, assignments, heldDefenders, true);
+            assignCollabAssists(
+                scenario,
+                observations,
+                assignments,
+                heldDefenders,
+                (defender, attackerId, overload) => [
+                    -overload,
+                    norm(subtractVectors(observations[attackerId].position, defender.position))
+                ]
+            );
+        }
+
+        function assignEarliestDeadline(
+            scenario,
+            observations,
+            config,
+            assignments,
+            heldDefenders,
+            useCorridors
+        ) {
+            const assignedAttackers = new Set(Object.values(assignments));
+            for (const defender of scenario.defenders) {
+                if (heldDefenders.has(defender.id)) {
+                    continue;
+                }
+                const candidates = candidateIds(defender.id, scenario, observations, useCorridors)
+                    .filter((attackerId) => !assignedAttackers.has(attackerId));
+                if (!candidates.length) {
+                    continue;
+                }
+                const targetId = minBy(
+                    candidates,
+                    (attackerId) => timeToTarget(
+                        observations[attackerId].position,
+                        observations[attackerId].velocity,
+                        config.target
+                    )
+                );
+                assignments[defender.id] = targetId;
+                assignedAttackers.add(targetId);
+            }
+        }
+
+        function assignEarliestDeadlineCollab(
+            scenario,
+            observations,
+            config,
+            assignments,
+            heldDefenders
+        ) {
+            assignEarliestDeadline(
+                scenario,
+                observations,
+                config,
+                assignments,
+                heldDefenders,
+                true
+            );
+            assignCollabAssists(
+                scenario,
+                observations,
+                assignments,
+                heldDefenders,
+                (defender, attackerId, overload) => [
+                    -overload,
+                    timeToTarget(
+                        observations[attackerId].position,
+                        observations[attackerId].velocity,
+                        config.target
+                    ),
+                    norm(subtractVectors(observations[attackerId].position, defender.position))
+                ]
+            );
+        }
+
+        function assignOptimized(
+            scenario,
+            observations,
+            config,
+            assignments,
+            heldDefenders,
+            useCorridors
+        ) {
+            const freeDefenders = scenario.defenders.filter(
+                (defender) => !heldDefenders.has(defender.id)
+            );
+            const assignedAttackers = new Set(Object.values(assignments));
+            const freeAttackers = scenario.attackers.filter(
+                (attacker) => attacker.alive
+                    && !assignedAttackers.has(attacker.id)
+                    && hasObservation(observations, attacker.id)
+            );
+
+            if (!freeDefenders.length || !freeAttackers.length) {
+                return;
+            }
+
+            const costs = freeDefenders.map((defender) =>
+                freeAttackers.map((attacker) => {
+                    if (useCorridors && attacker.corridor !== defender.corridor) {
+                        return INF_COST;
+                    }
+                    const observation = observations[attacker.id];
+                    const rendezvousS = norm(
+                        subtractVectors(observation.position, defender.position)
+                    ) / Math.max(config.defenderMaxSpeedMps, 1e-9);
+                    const deadlineS = timeToTarget(
+                        observation.position,
+                        observation.velocity,
+                        config.target
+                    );
+                    const finishS = rendezvousS + config.killDwellS;
+                    const slackS = deadlineS - finishS;
+                    if (slackS >= 0.0) {
+                        return rendezvousS + 0.01 * deadlineS;
+                    }
+                    return 10000.0 + 500.0 * Math.abs(slackS) + rendezvousS;
+                })
+            );
+
+            for (const pair of solveMinCostAssignment(costs)) {
+                if (costs[pair.row][pair.col] >= INF_COST) {
+                    continue;
+                }
+                assignments[freeDefenders[pair.row].id] = freeAttackers[pair.col].id;
+            }
+        }
+
+        function assignOptimizedCollab(
+            scenario,
+            observations,
+            config,
+            assignments,
+            heldDefenders
+        ) {
+            assignOptimized(
+                scenario,
+                observations,
+                config,
+                assignments,
+                heldDefenders,
+                true
+            );
+            assignOptimizedCollabAssists(
+                scenario,
+                observations,
+                config,
+                assignments,
+                heldDefenders
+            );
+        }
+
+        function assignCollabAssists(
+            scenario,
+            observations,
+            assignments,
+            heldDefenders,
+            targetKey
+        ) {
+            const assignedAttackers = new Set(Object.values(assignments));
+            for (const defender of scenario.defenders) {
+                if (heldDefenders.has(defender.id) || hasAssignment(assignments, defender.id)) {
+                    continue;
+                }
+                if (ownCorridorHasLiveAttackers(defender.id, scenario, observations)) {
+                    continue;
+                }
+
+                const overloads = remainingAttackerCountsByCorridor(
+                    scenario,
+                    observations,
+                    assignedAttackers
+                );
+                const candidates = scenario.attackers
+                    .filter((attacker) =>
+                        attacker.alive
+                        && hasObservation(observations, attacker.id)
+                        && !assignedAttackers.has(attacker.id)
+                        && attacker.corridor !== defender.corridor
+                        && (overloads.get(attacker.corridor) || 0) > 0
+                    )
+                    .map((attacker) => attacker.id);
+
+                if (!candidates.length) {
+                    continue;
+                }
+
+                const targetId = minBy(
+                    candidates,
+                    (attackerId) => targetKey(
+                        defender,
+                        attackerId,
+                        overloads.get(scenario.attackers[attackerId].corridor) || 0
+                    )
+                );
+                assignments[defender.id] = targetId;
+                assignedAttackers.add(targetId);
+            }
+        }
+
+        function assignOptimizedCollabAssists(
+            scenario,
+            observations,
+            config,
+            assignments,
+            heldDefenders
+        ) {
+            const assignedAttackers = new Set(Object.values(assignments));
+            const assistDefenders = scenario.defenders.filter(
+                (defender) => !heldDefenders.has(defender.id)
+                    && !hasAssignment(assignments, defender.id)
+                    && !ownCorridorHasLiveAttackers(defender.id, scenario, observations)
+            );
+            const overloads = remainingAttackerCountsByCorridor(
+                scenario,
+                observations,
+                assignedAttackers
+            );
+            const assistAttackers = scenario.attackers.filter(
+                (attacker) => attacker.alive
+                    && !assignedAttackers.has(attacker.id)
+                    && hasObservation(observations, attacker.id)
+                    && (overloads.get(attacker.corridor) || 0) > 0
+            );
+
+            if (!assistDefenders.length || !assistAttackers.length) {
+                return;
+            }
+
+            const costs = assistDefenders.map((defender) =>
+                assistAttackers.map((attacker) => {
+                    if (attacker.corridor === defender.corridor) {
+                        return INF_COST;
+                    }
+                    const observation = observations[attacker.id];
+                    const rendezvousS = norm(
+                        subtractVectors(observation.position, defender.position)
+                    ) / Math.max(config.defenderMaxSpeedMps, 1e-9);
+                    const deadlineS = timeToTarget(
+                        observation.position,
+                        observation.velocity,
+                        config.target
+                    );
+                    const finishS = rendezvousS + config.killDwellS;
+                    const slackS = deadlineS - finishS;
+                    const overloadBonus = 0.25 * (overloads.get(attacker.corridor) || 0);
+                    if (slackS >= 0.0) {
+                        return (
+                            rendezvousS
+                            + 0.01 * deadlineS
+                            + COLLABORATION_PENALTY
+                            - overloadBonus
+                        );
+                    }
+                    return (
+                        10000.0
+                        + 500.0 * Math.abs(slackS)
+                        + rendezvousS
+                        + COLLABORATION_PENALTY
+                        - overloadBonus
+                    );
+                })
+            );
+
+            for (const pair of solveMinCostAssignment(costs)) {
+                if (costs[pair.row][pair.col] >= INF_COST) {
+                    continue;
+                }
+                assignments[assistDefenders[pair.row].id] = assistAttackers[pair.col].id;
+            }
+        }
+
+        function ownCorridorHasLiveAttackers(defenderId, scenario, observations) {
+            return candidateIds(defenderId, scenario, observations, true).length > 0;
+        }
+
+        function remainingAttackerCountsByCorridor(scenario, observations, assignedAttackers) {
+            const counts = new Map();
+            for (const attacker of scenario.attackers) {
+                if (!attacker.alive || assignedAttackers.has(attacker.id) || !hasObservation(observations, attacker.id)) {
+                    continue;
+                }
+                counts.set(attacker.corridor, (counts.get(attacker.corridor) || 0) + 1);
+            }
+            return counts;
+        }
+
+        function solveMinCostAssignment(costMatrix) {
+            if (!costMatrix.length || !costMatrix[0].length) {
+                return [];
+            }
+
+            let matrix = costMatrix;
+            let transposed = false;
+            if (matrix.length > matrix[0].length) {
+                matrix = transposeMatrix(matrix);
+                transposed = true;
+            }
+
+            const assignment = hungarian(matrix);
+            const pairs = [];
+            assignment.forEach((column, row) => {
+                if (column === -1) {
+                    return;
+                }
+                if (!transposed) {
+                    pairs.push({ row, col: column });
+                } else {
+                    pairs.push({ row: column, col: row });
+                }
+            });
+            return pairs;
+        }
+
+        function transposeMatrix(matrix) {
+            return matrix[0].map((_, columnIndex) =>
+                matrix.map((row) => row[columnIndex])
+            );
+        }
+
+        function hungarian(matrix) {
+            const rowCount = matrix.length;
+            const columnCount = matrix[0].length;
+            const u = Array(rowCount + 1).fill(0.0);
+            const v = Array(columnCount + 1).fill(0.0);
+            const p = Array(columnCount + 1).fill(0);
+            const way = Array(columnCount + 1).fill(0);
+
+            for (let row = 1; row <= rowCount; row += 1) {
+                p[0] = row;
+                let column0 = 0;
+                const minValues = Array(columnCount + 1).fill(Infinity);
+                const used = Array(columnCount + 1).fill(false);
+
+                do {
+                    used[column0] = true;
+                    const row0 = p[column0];
+                    let delta = Infinity;
+                    let column1 = 0;
+
+                    for (let column = 1; column <= columnCount; column += 1) {
+                        if (used[column]) {
+                            continue;
+                        }
+                        const current = matrix[row0 - 1][column - 1] - u[row0] - v[column];
+                        if (current < minValues[column]) {
+                            minValues[column] = current;
+                            way[column] = column0;
+                        }
+                        if (minValues[column] < delta) {
+                            delta = minValues[column];
+                            column1 = column;
+                        }
+                    }
+
+                    for (let column = 0; column <= columnCount; column += 1) {
+                        if (used[column]) {
+                            u[p[column]] += delta;
+                            v[column] -= delta;
+                        } else {
+                            minValues[column] -= delta;
+                        }
+                    }
+                    column0 = column1;
+                } while (p[column0] !== 0);
+
+                do {
+                    const column1 = way[column0];
+                    p[column0] = p[column1];
+                    column0 = column1;
+                } while (column0 !== 0);
+            }
+
+            const assignment = Array(rowCount).fill(-1);
+            for (let column = 1; column <= columnCount; column += 1) {
+                if (p[column] !== 0) {
+                    assignment[p[column] - 1] = column - 1;
+                }
+            }
+            return assignment;
+        }
+
+        function advanceDefenders(scenario, observations, assignments, config) {
+            for (const defender of scenario.defenders) {
+                const attackerId = assignments[defender.id];
+                const observation = attackerId !== undefined ? observations[attackerId] : null;
+                let desiredVelocity = [0.0, 0.0, 0.0];
+
+                if (observation) {
+                    const offset = subtractVectors(observation.position, defender.position);
+                    const distance = norm(offset);
+                    if (distance <= 20.0) {
+                        desiredVelocity = addVectors(observation.velocity, scaleVector(offset, 0.8));
+                    } else {
+                        let leadS = distance / Math.max(config.defenderMaxSpeedMps, 1e-9);
+                        leadS = Math.min(
+                            leadS,
+                            Math.max(
+                                0.0,
+                                timeToTarget(observation.position, observation.velocity, config.target)
+                            )
+                        );
+                        const aimPoint = addVectors(
+                            observation.position,
+                            scaleVector(observation.velocity, leadS)
+                        );
+                        desiredVelocity = scaleVector(
+                            unit(subtractVectors(aimPoint, defender.position)),
+                            config.defenderMaxSpeedMps
+                        );
+                    }
+
+                    const desiredSpeed = norm(desiredVelocity);
+                    if (desiredSpeed > config.defenderMaxSpeedMps) {
+                        desiredVelocity = scaleVector(
+                            desiredVelocity,
+                            config.defenderMaxSpeedMps / desiredSpeed
+                        );
+                    }
+                }
+
+                applyVelocityCommand(defender, desiredVelocity, config);
+            }
+        }
+
+        function applyVelocityCommand(defender, desiredVelocity, config) {
+            const maxDeltaV = config.defenderMaxAccelMps2 * config.dtS;
+            let deltaV = subtractVectors(desiredVelocity, defender.velocity);
+            const deltaVNorm = norm(deltaV);
+            if (deltaVNorm > maxDeltaV) {
+                deltaV = scaleVector(deltaV, maxDeltaV / deltaVNorm);
+            }
+
+            defender.velocity = addVectors(defender.velocity, deltaV);
+            const speed = norm(defender.velocity);
+            if (speed > config.defenderMaxSpeedMps) {
+                defender.velocity = scaleVector(defender.velocity, config.defenderMaxSpeedMps / speed);
+            }
+            defender.position = addVectors(
+                defender.position,
+                scaleVector(defender.velocity, config.dtS)
+            );
+        }
+
+        function advanceAttackers(scenario, config) {
+            for (const attacker of scenario.attackers) {
+                if (attacker.alive) {
+                    attacker.position = addVectors(
+                        attacker.position,
+                        scaleVector(attacker.velocity, config.dtS)
+                    );
+                }
+            }
+        }
+
+        function updateDwellAndKills(scenario, dwellTimes, config) {
+            const killedIds = [];
+            for (const defender of scenario.defenders) {
+                for (const attacker of scenario.attackers) {
+                    if (!attacker.alive) {
+                        dwellTimes[defender.id][attacker.id] = 0.0;
+                        continue;
+                    }
+                    if (norm(subtractVectors(defender.position, attacker.position)) <= config.killRadiusM) {
+                        dwellTimes[defender.id][attacker.id] += config.dtS;
+                    } else {
+                        dwellTimes[defender.id][attacker.id] = 0.0;
+                    }
+
+                    if (dwellTimes[defender.id][attacker.id] >= config.killDwellS) {
+                        attacker.alive = false;
+                        attacker.killed = true;
+                        killedIds.push(attacker.id);
+                        for (let row = 0; row < dwellTimes.length; row += 1) {
+                            dwellTimes[row][attacker.id] = 0.0;
+                        }
+                    }
+                }
+            }
+            return killedIds;
+        }
+
+        function markBreaches(scenario, previousPositions, config) {
+            let breachedAny = false;
+            for (const attacker of scenario.attackers) {
+                if (!attacker.alive) {
+                    continue;
+                }
+                const previousPosition = previousPositions.get(attacker.id);
+                if (!previousPosition) {
+                    continue;
+                }
+                if (segmentReachesSphere(
+                    previousPosition,
+                    attacker.position,
+                    config.target,
+                    config.targetBreachRadiusM
+                )) {
+                    attacker.alive = false;
+                    attacker.breached = true;
+                    breachedAny = true;
+                }
+            }
+            return breachedAny;
+        }
+
+        function renderArena() {
+            const defenderCount = state.controls.defenders;
+            const laneWidth = plot.width / defenderCount;
+            const boundaries = Array.from({ length: Math.max(defenderCount - 1, 0) }, (_, index) =>
+                plot.left + laneWidth * (index + 1)
+            );
+            const labels = Array.from({ length: defenderCount }, (_, index) => ({
+                id: index,
+                x: plot.left + laneWidth * index + laneWidth / 2.0
+            }));
+
+            const boundarySelection = laneGroup.selectAll("line.lane-boundary").data(boundaries);
+            boundarySelection.enter()
+                .append("line")
+                .attr("class", "lane-boundary")
+                .merge(boundarySelection)
+                .attr("x1", (x) => x)
+                .attr("y1", plot.top)
+                .attr("x2", (x) => x)
+                .attr("y2", plot.bottom);
+            boundarySelection.exit().remove();
+
+            const labelSelection = laneGroup.selectAll("text.lane-label").data(labels, (d) => d.id);
+            labelSelection.enter()
+                .append("text")
+                .attr("class", "lane-label")
+                .merge(labelSelection)
+                .attr("x", (d) => d.x)
+                .attr("y", plot.top - 16)
+                .text((d) => `C${d.id + 1}`);
+            labelSelection.exit().remove();
+
+            const targetZone = overlayGroup.selectAll("rect.target-zone").data([0]);
+            targetZone.enter()
+                .append("rect")
+                .attr("class", "target-zone")
+                .merge(targetZone)
+                .attr("x", plot.left)
+                .attr("y", plot.bottom - 18)
+                .attr("width", plot.width)
+                .attr("height", 18);
+
+            const targetLine = overlayGroup.selectAll("line.target-line").data([0]);
+            targetLine.enter()
+                .append("line")
+                .attr("class", "target-line")
+                .merge(targetLine)
+                .attr("x1", plot.left)
+                .attr("y1", plot.bottom)
+                .attr("x2", plot.right)
+                .attr("y2", plot.bottom);
+
+            const targetLabel = overlayGroup.selectAll("text.target-label").data([0]);
+            targetLabel.enter()
+                .append("text")
+                .attr("class", "target-label")
+                .merge(targetLabel)
+                .attr("x", plot.right)
+                .attr("y", plot.bottom - 24)
+                .text("Target breach zone");
+
+            const rangeLabels = [
+                { label: `${CONFIG.maxSpawnDistanceM.toFixed(0)} m`, y: plot.top + 4 },
+                { label: `${(CONFIG.maxSpawnDistanceM / 2.0).toFixed(0)} m`, y: plot.top + plot.height / 2.0 },
+                { label: "0 m", y: plot.bottom }
+            ];
+            const axisSelection = axisGroup.selectAll("text.range-axis").data(rangeLabels, (d) => d.label);
+            axisSelection.enter()
+                .append("text")
+                .attr("class", "range-axis")
+                .merge(axisSelection)
+                .attr("x", plot.left)
+                .attr("y", (d) => d.y)
+                .text((d) => d.label);
+            axisSelection.exit().remove();
+        }
+
+        function renderScene() {
+            renderAssignments();
+            renderAttackers();
+            renderDefenders();
+        }
+
+        function renderAssignments() {
+            if (!state.scenario) {
+                return;
+            }
+            const lines = Object.entries(state.assignments)
+                .map(([defenderId, attackerId]) => {
+                    const defender = state.scenario.defenders[Number(defenderId)];
+                    const attacker = state.scenario.attackers[Number(attackerId)];
+                    if (!defender || !attacker || !attacker.alive) {
+                        return null;
+                    }
+                    const defenderPoint = projectPoint(defender.position, defender.corridor);
+                    const attackerPoint = projectPoint(attacker.position, attacker.corridor);
+                    return {
+                        id: `${defender.id}-${attacker.id}`,
+                        x1: defenderPoint.x,
+                        y1: defenderPoint.y,
+                        x2: attackerPoint.x,
+                        y2: attackerPoint.y
+                    };
+                })
+                .filter(Boolean);
+
+            const selection = assignmentGroup.selectAll("line.assignment-link").data(lines, (d) => d.id);
+            selection.enter()
+                .append("line")
+                .attr("class", "assignment-link")
+                .merge(selection)
+                .attr("x1", (d) => d.x1)
+                .attr("y1", (d) => d.y1)
+                .attr("x2", (d) => d.x2)
+                .attr("y2", (d) => d.y2);
+            selection.exit().remove();
+        }
+
+        function renderDefenders() {
+            const defenders = state.scenario ? state.scenario.defenders : [];
+            const activeDefenders = new Set(
+                Object.entries(state.assignments)
+                    .filter(([, attackerId]) => {
+                        const attacker = state.scenario && state.scenario.attackers[Number(attackerId)];
+                        return attacker && attacker.alive;
+                    })
+                    .map(([defenderId]) => Number(defenderId))
+            );
+
+            const selection = defenderGroup.selectAll("g.defender-node").data(defenders, (d) => d.id);
+            const entering = selection.enter().append("g").attr("class", "defender-node");
+            entering.append("circle").attr("class", "defender-dot").attr("r", 10);
+            entering.append("text").attr("class", "defender-label");
+
+            const merged = entering.merge(selection);
+            merged.attr("transform", (d) => {
+                const point = projectPoint(d.position, d.corridor);
+                return `translate(${point.x}, ${point.y})`;
+            });
+            merged.select("circle")
+                .attr("fill", (d) => activeDefenders.has(d.id) ? "#0f7a8a" : "#5aa1ac")
+                .attr("opacity", (d) => activeDefenders.has(d.id) ? 1.0 : 0.8);
+            merged.select("text")
+                .text((d) => d.id + 1)
+                .attr("dy", 0.5);
+
+            selection.exit().remove();
+        }
+
+        function renderAttackers() {
+            const attackers = state.scenario ? state.scenario.attackers : [];
+            const selection = attackerGroup.selectAll("g.attacker-node").data(attackers, (d) => d.id);
+            const entering = selection.enter().append("g").attr("class", "attacker-node");
+            entering.append("path").attr("class", "attacker-shape");
+            entering.append("text").attr("class", "attacker-label");
+
+            const merged = entering.merge(selection);
+            merged.attr("transform", (d) => {
+                const point = projectPoint(d.position, d.corridor);
+                return `translate(${point.x}, ${point.y}) rotate(180)`;
+            });
+            merged.select("path")
+                .attr("d", attackerSymbol())
+                .attr("fill", (d) => attackerFill(d))
+                .attr("opacity", (d) => attackerOpacity(d));
+            merged.select("text")
+                .text((d) => d.id + 1)
+                .attr("transform", "rotate(180)")
+                .attr("dy", 4)
+                .attr("opacity", (d) => attackerOpacity(d));
+
+            selection.exit().remove();
+        }
+
+        function attackerFill(attacker) {
+            if (attacker.breached) {
+                return "#b9382f";
+            }
+            if (attacker.killed) {
+                return "#a0acb8";
+            }
+            return "#f08a24";
+        }
+
+        function attackerOpacity(attacker) {
+            if (attacker.breached) {
+                return 1.0;
+            }
+            return attacker.alive ? 1.0 : 0.4;
+        }
+
+        function projectPoint(position, fallbackCorridor) {
+            return {
+                x: projectX(position, fallbackCorridor),
+                y: projectY(position)
+            };
+        }
+
+        function projectX(position, fallbackCorridor) {
+            const defenderCount = state.controls.defenders;
+            const laneWidth = plot.width / defenderCount;
+            const lateralMagnitude = Math.hypot(position[1], position[2]);
+            const angle = lateralMagnitude < EPSILON
+                ? corridorCenterAngle(fallbackCorridor, defenderCount)
+                : lateralAngle(position);
+            const sectorWidth = (2.0 * Math.PI) / defenderCount;
+            const wrapped = normalizeAngle(angle);
+            const corridor = corridorIndexForAngle(wrapped, defenderCount);
+            const offset = (wrapped - corridor * sectorWidth) / sectorWidth;
+            const inset = clamp(0.15 + 0.7 * offset, 0.12, 0.88);
+            return plot.left + corridor * laneWidth + inset * laneWidth;
+        }
+
+        function projectY(position) {
+            const radius = clamp(norm(position), 0.0, CONFIG.maxSpawnDistanceM);
+            return plot.bottom - (radius / CONFIG.maxSpawnDistanceM) * plot.height;
+        }
+
+        function updateMetrics() {
+            const kills = state.scenario
+                ? state.scenario.attackers.filter((attacker) => attacker.killed).length
+                : 0;
+            const completed = state.completedRuns.length;
+            const successes = state.completedRuns.filter((result) => result.success).length;
+            metrics.run.textContent = `Run ${state.runNumber}`;
+            metrics.status.textContent = statusLabel(state.status);
+            metrics.status.className = `metric-value status-${state.status}`;
+            metrics.success.textContent = completed
+                ? `${((successes / completed) * 100.0).toFixed(1)}%`
+                : "0.0%";
+            metrics.kills.textContent = `${kills} / ${state.controls.attackers}`;
+            metrics.elapsed.textContent = `${state.elapsedS.toFixed(1)}s`;
+            runSummary.textContent = `Scenario seed ${state.scenario ? state.scenario.seed : 0}. ${completed} completed runs with the current settings. Changing strategy or drone counts resets the replay stream back to run 1.`;
+        }
+
+        function statusLabel(status) {
+            if (status === "success") {
+                return "Success";
+            }
+            if (status === "breach") {
+                return "Target breached";
+            }
+            return "Running";
+        }
+
+        function hasObservation(observations, attackerId) {
+            return Object.prototype.hasOwnProperty.call(observations, attackerId);
+        }
+
+        function hasAssignment(assignments, defenderId) {
+            return Object.prototype.hasOwnProperty.call(assignments, defenderId);
+        }
+
+        function compareKeys(left, right) {
+            const leftValues = Array.isArray(left) ? left : [left];
+            const rightValues = Array.isArray(right) ? right : [right];
+            const count = Math.max(leftValues.length, rightValues.length);
+            for (let index = 0; index < count; index += 1) {
+                const leftValue = leftValues[index] ?? 0;
+                const rightValue = rightValues[index] ?? 0;
+                if (leftValue < rightValue) {
+                    return -1;
+                }
+                if (leftValue > rightValue) {
+                    return 1;
+                }
+            }
+            return 0;
+        }
+
+        function minBy(values, keyFn) {
+            let bestValue = values[0];
+            let bestKey = keyFn(bestValue);
+            for (let index = 1; index < values.length; index += 1) {
+                const candidateValue = values[index];
+                const candidateKey = keyFn(candidateValue);
+                if (compareKeys(candidateKey, bestKey) < 0) {
+                    bestValue = candidateValue;
+                    bestKey = candidateKey;
+                }
+            }
+            return bestValue;
+        }
+
+        function cloneVector(vector) {
+            return [vector[0], vector[1], vector[2]];
+        }
+
+        function addVectors(left, right) {
+            return [left[0] + right[0], left[1] + right[1], left[2] + right[2]];
+        }
+
+        function subtractVectors(left, right) {
+            return [left[0] - right[0], left[1] - right[1], left[2] - right[2]];
+        }
+
+        function scaleVector(vector, scalar) {
+            return [vector[0] * scalar, vector[1] * scalar, vector[2] * scalar];
+        }
+
+        function dot(left, right) {
+            return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
+        }
+
+        function norm(vector) {
+            return Math.hypot(vector[0], vector[1], vector[2]);
+        }
+
+        function unit(vector) {
+            const length = norm(vector);
+            if (length < EPSILON) {
+                return [0.0, 0.0, 0.0];
+            }
+            return scaleVector(vector, 1.0 / length);
+        }
+
+        function clamp(value, minValue, maxValue) {
+            return Math.max(minValue, Math.min(maxValue, value));
+        }
+
+        function normalizeAngle(angle) {
+            const fullTurn = 2.0 * Math.PI;
+            return ((angle % fullTurn) + fullTurn) % fullTurn;
+        }
+
+        function lateralAngle(position) {
+            return normalizeAngle(Math.atan2(position[2], position[1]));
+        }
+
+        function corridorIndexForPosition(position, defenderCount) {
+            return corridorIndexForAngle(lateralAngle(position), defenderCount);
+        }
+
+        function corridorIndexForAngle(angle, defenderCount) {
+            if (defenderCount <= 0) {
+                throw new Error("defenderCount must be positive");
+            }
+            const sectorWidth = (2.0 * Math.PI) / defenderCount;
+            return Math.min(Math.floor(normalizeAngle(angle) / sectorWidth), defenderCount - 1);
+        }
+
+        function corridorCenterAngle(corridor, defenderCount) {
+            const sectorWidth = (2.0 * Math.PI) / defenderCount;
+            return (corridor + 0.5) * sectorWidth;
+        }
+
+        function timeToTarget(position, velocity, target) {
+            const speed = norm(velocity);
+            if (speed < EPSILON) {
+                return Infinity;
+            }
+            return norm(subtractVectors(position, target)) / speed;
+        }
+
+        function segmentReachesSphere(start, end, center, radius) {
+            if (
+                norm(subtractVectors(start, center)) <= radius
+                || norm(subtractVectors(end, center)) <= radius
+            ) {
+                return true;
+            }
+            const segment = subtractVectors(end, start);
+            const segmentLengthSquared = dot(segment, segment);
+            if (segmentLengthSquared < EPSILON) {
+                return false;
+            }
+            const t = dot(subtractVectors(center, start), segment) / segmentLengthSquared;
+            if (t < 0.0 || t > 1.0) {
+                return false;
+            }
+            const closest = addVectors(start, scaleVector(segment, t));
+            return norm(subtractVectors(closest, center)) <= radius;
+        }
+
+        controls.strategy.addEventListener("change", () => {
+            state.controls.strategy = controls.strategy.value;
+            resetSimulation();
+        });
+
+        controls.defenders.addEventListener("input", () => {
+            state.controls.defenders = Number(controls.defenders.value);
+            syncControlLabels();
+            resetSimulation();
+        });
+
+        controls.attackers.addEventListener("input", () => {
+            state.controls.attackers = Number(controls.attackers.value);
+            syncControlLabels();
+            resetSimulation();
+        });
+
+        initialize();
+    </script>
+</body>
+</html>
