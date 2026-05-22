@@ -120,6 +120,7 @@ def main() -> int:
         plot_terminal_time_distribution(results, output_dir, 8),
         plot_global_vs_corridor_success_uplift(results, output_dir, 9),
         plot_optimized_global_delta(results, output_dir, 10),
+        plot_strategy_taxonomy_matrix(results, output_dir, 11),
     ]
 
     write_figure_index(figure_records, output_dir / "figure_index.md")
@@ -1271,6 +1272,290 @@ def plot_optimized_global_delta(
         filename,
         "Optimized global per-scenario delta",
         "Shows how often global optimization improves or hurts individual scenarios.",
+    )
+
+
+def plot_strategy_taxonomy_matrix(
+    results: list[Result], output_dir: Path, number: int
+) -> FigureRecord:
+    rows = [
+        (
+            "optimized",
+            "Optimized",
+            "Weighted matching",
+            "Replans with\nintercept-time and\ndeadline-risk scoring.",
+            "#0072B2",
+        ),
+        (
+            "nearest",
+            "Nearest",
+            "Distance greedy",
+            "Chooses the closest live\nattacker first.",
+            "#009E73",
+        ),
+        (
+            "earliest_deadline",
+            "Earliest Deadline",
+            "Urgency greedy",
+            "Chooses the attacker with\nthe shortest time to\ntarget.",
+            "#D55E00",
+        ),
+    ]
+    columns = [
+        (
+            "corridor",
+            "Corridor",
+            "Hard ownership",
+            "Each defender stays inside\nits angular sector.",
+            "#9CA3AF",
+            "#F3F4F6",
+        ),
+        (
+            "collab",
+            "Collaboration",
+            "Corridor-first assists",
+            "Idle defenders help overloaded\nneighbor corridors.",
+            "#4B5563",
+            "#EEF2F7",
+        ),
+        (
+            "global",
+            "Global",
+            "No corridor limits",
+            "Any defender can be assigned\nto any live attacker.",
+            "#1D63B8",
+            "#EAF2FF",
+        ),
+    ]
+    cell_text = {
+        ("optimized", "corridor"): (
+            "Optimized Corridor",
+            "Linear assignment inside the\nowned sector with\nnear-capture lock.",
+        ),
+        ("optimized", "collab"): (
+            "Optimized Collab",
+            "Optimized corridor matching first.\nIdle defenders then assist\nwith a small off-corridor penalty.",
+        ),
+        ("optimized", "global"): (
+            "Optimized Global",
+            "Same optimized scoring, but\nassignment is fully unrestricted.",
+        ),
+        ("nearest", "corridor"): (
+            "Nearest Corridor",
+            "Greedy nearest-target pursuit\nwithin the owned sector.",
+        ),
+        ("nearest", "collab"): (
+            "Nearest Collab",
+            "Nearest-target corridor rule first.\nIdle defenders then assist\nnearby overloads.",
+        ),
+        ("nearest", "global"): (
+            "Nearest Global",
+            "Greedy nearest-target pursuit\nacross all live attackers.",
+        ),
+        ("earliest_deadline", "corridor"): (
+            "Deadline Corridor",
+            "Urgency-first targeting inside\nthe owned sector.",
+        ),
+        ("earliest_deadline", "collab"): (
+            "Deadline Collab",
+            "Urgency-first corridor rule first.\nIdle defenders then help the\nmost urgent leftovers.",
+        ),
+        ("earliest_deadline", "global"): (
+            "Deadline Global",
+            "Urgency-first targeting across\nall live attackers.",
+        ),
+    }
+
+    fig, ax = plt.subplots(figsize=(13.0, 9.2))
+    fig.patch.set_facecolor("#FFFFFF")
+    ax.set_facecolor("#FFFFFF")
+    ax.set_xlim(0.0, 14.0)
+    ax.set_ylim(0.0, 11.4)
+    ax.axis("off")
+
+    fig.text(
+        0.5,
+        0.965,
+        "Defensive Drone Strategy Matrix",
+        ha="center",
+        va="top",
+        fontsize=18,
+        fontweight="bold",
+    )
+    fig.text(
+        0.5,
+        0.93,
+        "Rows are target-selection policies. Columns are the three assignment regimes.",
+        ha="center",
+        va="top",
+        fontsize=11,
+        color="#374151",
+    )
+
+    row_x = 0.8
+    row_w = 2.6
+    grid_x = 3.9
+    cell_w = 3.05
+    cell_h = 1.92
+    gap_x = 0.28
+    gap_y = 0.34
+    header_y = 8.95
+    header_h = 1.2
+    top_y = 6.65
+
+    ax.text(
+        grid_x + (3 * cell_w + 2 * gap_x) / 2.0,
+        10.42,
+        "Assignment Regimes",
+        ha="center",
+        va="center",
+        fontsize=12,
+        fontweight="bold",
+        color="#111827",
+    )
+    ax.text(
+        row_x + row_w / 2.0,
+        10.42,
+        "Targeting Policies",
+        ha="center",
+        va="center",
+        fontsize=12,
+        fontweight="bold",
+        color="#111827",
+    )
+
+    for col_index, (_, title, _subtitle, blurb, header_color, body_color) in enumerate(columns):
+        x = grid_x + col_index * (cell_w + gap_x)
+        header = patches.FancyBboxPatch(
+            (x, header_y),
+            cell_w,
+            header_h,
+            boxstyle="round,pad=0.02,rounding_size=0.12",
+            linewidth=0,
+            facecolor=header_color,
+        )
+        ax.add_patch(header)
+        ax.text(
+            x + 0.14,
+            header_y + header_h - 0.2,
+            title,
+            ha="left",
+            va="top",
+            fontsize=12,
+            fontweight="bold",
+            color="#FFFFFF",
+        )
+        ax.text(
+            x + 0.14,
+            header_y + 0.22,
+            blurb,
+            ha="left",
+            va="bottom",
+            fontsize=8.8,
+            color="#F9FAFB",
+        )
+
+    for row_index, (row_key, title, subtitle, blurb, accent_color) in enumerate(rows):
+        y = top_y - row_index * (cell_h + gap_y)
+        row_box = patches.FancyBboxPatch(
+            (row_x, y),
+            row_w,
+            cell_h,
+            boxstyle="round,pad=0.02,rounding_size=0.12",
+            linewidth=1.4,
+            edgecolor=accent_color,
+            facecolor="#FFFFFF",
+        )
+        ax.add_patch(row_box)
+        ax.add_patch(
+            patches.Rectangle(
+                (row_x, y),
+                0.16,
+                cell_h,
+                linewidth=0,
+                facecolor=accent_color,
+            )
+        )
+        ax.text(
+            row_x + 0.28,
+            y + cell_h - 0.24,
+            title,
+            ha="left",
+            va="top",
+            fontsize=12,
+            fontweight="bold",
+            color="#111827",
+        )
+        ax.text(
+            row_x + 0.28,
+            y + cell_h - 0.58,
+            subtitle,
+            ha="left",
+            va="top",
+            fontsize=9.5,
+            color=accent_color,
+        )
+        ax.text(
+            row_x + 0.28,
+            y + 0.28,
+            blurb,
+            ha="left",
+            va="bottom",
+            fontsize=8.8,
+            color="#4B5563",
+        )
+
+        for col_index, (col_key, _, _, _, _, body_color) in enumerate(columns):
+            x = grid_x + col_index * (cell_w + gap_x)
+            title_text, blurb_text = cell_text[(row_key, col_key)]
+            cell = patches.FancyBboxPatch(
+                (x, y),
+                cell_w,
+                cell_h,
+                boxstyle="round,pad=0.02,rounding_size=0.12",
+                linewidth=1.3,
+                edgecolor=accent_color,
+                facecolor=body_color,
+            )
+            ax.add_patch(cell)
+            ax.text(
+                x + 0.16,
+                y + cell_h - 0.24,
+                title_text,
+                ha="left",
+                va="top",
+                fontsize=11,
+                fontweight="bold",
+                color="#111827",
+            )
+            ax.text(
+                x + 0.16,
+                y + 0.28,
+                blurb_text,
+                ha="left",
+                va="bottom",
+                fontsize=8.5,
+                color="#374151",
+            )
+
+    present = set(ordered_strategies(results))
+    if len(present) < 9:
+        fig.text(
+            0.5,
+            0.045,
+            "Note: the matrix shows the full taxonomy even if the current dataset omits some strategies.",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color="#6B7280",
+        )
+
+    filename = save_figure(fig, output_dir, "11_strategy_taxonomy_matrix")
+    return FigureRecord(
+        number,
+        filename,
+        "Strategy taxonomy matrix",
+        "Explains the nine strategy combinations as a 3x3 grid of targeting policies by assignment regime.",
     )
 
 

@@ -28,6 +28,7 @@ Sample: 1000 scenarios and 9000 strategy runs.
 - Figure 8: `08_terminal_time_distribution.png` - Shows whether strategies delay breach or finish quickly.
 - Figure 9: `09_global_vs_corridor_success_uplift.png` - Compares hard corridors, collaborative corridors, and global assignment.
 - Figure 10: `10_optimized_global_kill_ratio_delta.png` - Shows how often global optimization improves or hurts individual scenarios.
+- Figure 11: `11_strategy_taxonomy_matrix.png` - Explains the nine strategy combinations as a 3x3 grid of targeting policies by assignment regime.
 
 ## Overall Metrics
 

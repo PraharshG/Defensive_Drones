@@ -10,3 +10,4 @@
 8. `08_terminal_time_distribution.png` - **Terminal event timing.** Shows whether strategies delay breach or finish quickly.
 9. `09_global_vs_corridor_success_uplift.png` - **Success by assignment mode.** Compares hard corridors, collaborative corridors, and global assignment.
 10. `10_optimized_global_kill_ratio_delta.png` - **Optimized global per-scenario delta.** Shows how often global optimization improves or hurts individual scenarios.
+11. `11_strategy_taxonomy_matrix.png` - **Strategy taxonomy matrix.** Explains the nine strategy combinations as a 3x3 grid of targeting policies by assignment regime.
