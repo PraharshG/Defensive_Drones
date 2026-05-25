@@ -285,29 +285,40 @@ def _assign_optimized(
     if not free_defenders or not free_attackers:
         return
 
-    costs = np.full((len(free_defenders), len(free_attackers)), INF_COST, dtype=float)
     target = config.target_vector
-    for row, defender in enumerate(free_defenders):
-        for col, attacker in enumerate(free_attackers):
-            if use_corridors and attacker.corridor != defender.corridor:
-                continue
-            observation = observations[attacker.id]
-            rendezvous_s = norm(observation.position - defender.position) / max(
-                config.defender_max_speed_mps, 1e-9
-            )
-            deadline_s = time_to_target(
-                observation.position, observation.velocity, target
-            )
-            finish_s = rendezvous_s + config.kill_dwell_s
-            slack_s = deadline_s - finish_s
-            if slack_s >= 0.0:
-                costs[row, col] = rendezvous_s + 0.01 * deadline_s
-            else:
-                costs[row, col] = (
-                    10_000.0
-                    + 500.0 * abs(slack_s)
-                    + rendezvous_s
-                )
+    defender_positions = np.array([defender.position for defender in free_defenders])
+    defender_corridors = np.array([defender.corridor for defender in free_defenders])
+    attacker_positions = np.array(
+        [observations[attacker.id].position for attacker in free_attackers]
+    )
+    attacker_velocities = np.array(
+        [observations[attacker.id].velocity for attacker in free_attackers]
+    )
+    attacker_corridors = np.array([attacker.corridor for attacker in free_attackers])
+
+    rendezvous_s = (
+        np.linalg.norm(
+            defender_positions[:, np.newaxis, :] - attacker_positions[np.newaxis, :, :],
+            axis=2,
+        )
+        / max(config.defender_max_speed_mps, 1e-9)
+    )
+    attacker_speeds = np.linalg.norm(attacker_velocities, axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        deadline_s = np.linalg.norm(attacker_positions - target, axis=1) / attacker_speeds
+    slack_s = deadline_s[np.newaxis, :] - (rendezvous_s + config.kill_dwell_s)
+    costs = np.where(
+        slack_s >= 0.0,
+        rendezvous_s + 0.01 * deadline_s[np.newaxis, :],
+        10_000.0 + 500.0 * np.abs(slack_s) + rendezvous_s,
+    )
+    if use_corridors:
+        costs = np.where(
+            defender_corridors[:, np.newaxis] == attacker_corridors[np.newaxis, :],
+            costs,
+            INF_COST,
+        )
+    costs = np.where(np.isfinite(costs), costs, INF_COST)
 
     row_ind, col_ind = linear_sum_assignment(costs)
     for row, col in zip(row_ind, col_ind):
@@ -405,37 +416,49 @@ def _assign_optimized_collab_assists(
     if not assist_defenders or not assist_attackers:
         return
 
-    costs = np.full((len(assist_defenders), len(assist_attackers)), INF_COST, dtype=float)
     target = config.target_vector
-    for row, defender in enumerate(assist_defenders):
-        for col, attacker in enumerate(assist_attackers):
-            if attacker.corridor == defender.corridor:
-                continue
-            observation = observations[attacker.id]
-            rendezvous_s = norm(observation.position - defender.position) / max(
-                config.defender_max_speed_mps, 1e-9
-            )
-            deadline_s = time_to_target(
-                observation.position, observation.velocity, target
-            )
-            finish_s = rendezvous_s + config.kill_dwell_s
-            slack_s = deadline_s - finish_s
-            overload_bonus = 0.25 * overloads.get(attacker.corridor, 0)
-            if slack_s >= 0.0:
-                costs[row, col] = (
-                    rendezvous_s
-                    + 0.01 * deadline_s
-                    + COLLABORATION_PENALTY
-                    - overload_bonus
-                )
-            else:
-                costs[row, col] = (
-                    10_000.0
-                    + 500.0 * abs(slack_s)
-                    + rendezvous_s
-                    + COLLABORATION_PENALTY
-                    - overload_bonus
-                )
+    defender_positions = np.array([defender.position for defender in assist_defenders])
+    defender_corridors = np.array([defender.corridor for defender in assist_defenders])
+    attacker_positions = np.array(
+        [observations[attacker.id].position for attacker in assist_attackers]
+    )
+    attacker_velocities = np.array(
+        [observations[attacker.id].velocity for attacker in assist_attackers]
+    )
+    attacker_corridors = np.array([attacker.corridor for attacker in assist_attackers])
+    overload_bonus = np.array(
+        [0.25 * overloads.get(attacker.corridor, 0) for attacker in assist_attackers]
+    )
+
+    rendezvous_s = (
+        np.linalg.norm(
+            defender_positions[:, np.newaxis, :] - attacker_positions[np.newaxis, :, :],
+            axis=2,
+        )
+        / max(config.defender_max_speed_mps, 1e-9)
+    )
+    attacker_speeds = np.linalg.norm(attacker_velocities, axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        deadline_s = np.linalg.norm(attacker_positions - target, axis=1) / attacker_speeds
+    slack_s = deadline_s[np.newaxis, :] - (rendezvous_s + config.kill_dwell_s)
+    costs = np.where(
+        slack_s >= 0.0,
+        rendezvous_s
+        + 0.01 * deadline_s[np.newaxis, :]
+        + COLLABORATION_PENALTY
+        - overload_bonus[np.newaxis, :],
+        10_000.0
+        + 500.0 * np.abs(slack_s)
+        + rendezvous_s
+        + COLLABORATION_PENALTY
+        - overload_bonus[np.newaxis, :],
+    )
+    costs = np.where(
+        defender_corridors[:, np.newaxis] != attacker_corridors[np.newaxis, :],
+        costs,
+        INF_COST,
+    )
+    costs = np.where(np.isfinite(costs), costs, INF_COST)
 
     row_ind, col_ind = linear_sum_assignment(costs)
     for row, col in zip(row_ind, col_ind):

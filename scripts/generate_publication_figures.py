@@ -65,7 +65,15 @@ COLLAB_FOR = {
     "nearest": "nearest_collab",
     "earliest_deadline": "earliest_deadline_collab",
 }
-ATTACKER_BUCKET_ORDER = ["5-10", "11-15", "16-20"]
+ATTACKER_BUCKET_ORDER = [
+    "5-10",
+    "11-15",
+    "16-20",
+    "250-274",
+    "275-299",
+    "300-324",
+    "325-350",
+]
 PALETTE = {
     "optimized_global": "#0072B2",
     "optimized_collab": "#4B5563",
@@ -92,6 +100,8 @@ class Result:
     success: bool
     completion_time_s: float
     kill_ratio: float
+    breach_rate: float
+    first_breach_time_s: float | None
 
 
 @dataclass(frozen=True)
@@ -167,6 +177,12 @@ def load_results(path: Path) -> list[Result]:
             success=bool(int(row["success"])),
             completion_time_s=float(row["completion_time_s"]),
             kill_ratio=float(row["kill_ratio"]),
+            breach_rate=float(row.get("breach_rate", 0.0)),
+            first_breach_time_s=(
+                float(row["first_breach_time_s"])
+                if row.get("first_breach_time_s")
+                else None
+            ),
         )
         for row in rows
     ]
@@ -214,6 +230,28 @@ def standard_error(values: list[float]) -> float:
     if len(values) < 2:
         return 0.0
     return statistics.stdev(values) / math.sqrt(len(values))
+
+
+def attacker_bucket_sort_key(bucket: str) -> tuple[int, int]:
+    lower, _, upper = bucket.partition("-")
+    return int(lower), int(upper or lower)
+
+
+def attacker_buckets_for(results: list[Result]) -> list[str]:
+    present = {result.attacker_bucket for result in results}
+    ordered = [bucket for bucket in ATTACKER_BUCKET_ORDER if bucket in present]
+    ordered.extend(
+        sorted(present.difference(ordered), key=attacker_bucket_sort_key)
+    )
+    return ordered
+
+
+def representative_values(values: list[int], limit: int) -> list[int]:
+    ordered = sorted(set(values))
+    if len(ordered) <= limit:
+        return ordered
+    indices = np.linspace(0, len(ordered) - 1, limit).round().astype(int)
+    return [ordered[index] for index in indices]
 
 
 def wilson_interval(successes: int, total: int, z: float = 1.96) -> tuple[float, float]:
@@ -360,8 +398,10 @@ def plot_capability_envelope(
         )
         if strategy in strategies
     ]
-    defender_counts = [3, 4, 5]
-    attacker_buckets = ATTACKER_BUCKET_ORDER
+    defender_counts = representative_values(
+        [result.defender_count for result in results], 3
+    )
+    attacker_buckets = attacker_buckets_for(results)
     panel_titles = {
         "earliest_deadline_collab": "Earliest Deadline Collab",
         "optimized_collab": "Optimized Collab",
@@ -804,8 +844,8 @@ def plot_paired_scenario_conversion_matrix(
     fig.text(
         0.5,
         0.915,
-        "Evaluating 1,000 identical scenarios to isolate algorithmic gains\n"
-        "from environmental randomness.",
+        f"Evaluating {len(paired):,} matched scenario cells to isolate algorithmic gains\n"
+        "from environmental randomness and defender-count effects.",
         fontsize=10.75,
         fontstyle="italic",
         color="#666666",
@@ -817,8 +857,8 @@ def plot_paired_scenario_conversion_matrix(
     fig.text(
         0.5,
         0.03,
-        "Optimized global allocation yields highly asymmetric returns,\n"
-        "converting 140 failures while risking only 21 regressions.",
+        "Optimized global allocation yields paired-scenario returns,\n"
+        f"converting {converted_success} failures while risking {regression} regressions.",
         fontsize=10.75,
         fontweight="medium",
         color="#1A1A1A",
@@ -870,12 +910,9 @@ def plot_attacker_load_cliff(
         "optimized_collab": 6.0,
         "optimized_global": 8.0,
     }
-    bucket_labels = [
-        "5-10\n(Moderate Load)",
-        "11-15\n(High Load)",
-        "16-20\n(Severe Load)",
-    ]
-    x = np.arange(len(ATTACKER_BUCKET_ORDER))
+    attacker_buckets = attacker_buckets_for(results)
+    bucket_labels = [f"{bucket}\nattackers" for bucket in attacker_buckets]
+    x = np.arange(len(attacker_buckets))
     series = {
         strategy: [
             rate(
@@ -887,7 +924,7 @@ def plot_attacker_load_cliff(
                 ]
             )
             * 100.0
-            for bucket in ATTACKER_BUCKET_ORDER
+            for bucket in attacker_buckets
         ]
         for strategy in selected
     }
@@ -896,17 +933,18 @@ def plot_attacker_load_cliff(
     fig.patch.set_facecolor("#FFFFFF")
     ax.set_facecolor("#FFFFFF")
 
-    ax.axvspan(0.5, 2.5, facecolor="#F9FAFB", alpha=1.0, zorder=0)
-    ax.text(
-        1.5,
-        62.0,
-        "SYSTEM OVERLOAD ZONE",
-        color="#9CA3AF",
-        fontsize=10,
-        fontweight="bold",
-        ha="center",
-        va="center",
-    )
+    if len(attacker_buckets) > 1:
+        ax.axvspan(0.5, len(attacker_buckets) - 0.5, facecolor="#F9FAFB", alpha=1.0, zorder=0)
+        ax.text(
+            (len(attacker_buckets) - 1) / 2.0,
+            62.0,
+            "HIGHER LOAD REGIME",
+            color="#9CA3AF",
+            fontsize=10,
+            fontweight="bold",
+            ha="center",
+            va="center",
+        )
 
     for strategy in selected:
         ax.plot(
@@ -939,14 +977,18 @@ def plot_attacker_load_cliff(
         legend_text.set_color("#333333")
 
     global_drop = 0.0
-    if series.get("optimized_global") and series["optimized_global"][0] > 0.0:
+    if (
+        len(attacker_buckets) > 1
+        and series.get("optimized_global")
+        and series["optimized_global"][0] > 0.0
+    ):
         global_drop = (
             1.0 - series["optimized_global"][1] / series["optimized_global"][0]
         ) * 100.0
     drop_annotation = ax.annotate(
         f"-{global_drop:.0f}% Capability Drop",
-        xy=(1, series["optimized_global"][1]),
-        xytext=(1.28, 26.0),
+        xy=(min(1, len(attacker_buckets) - 1), series["optimized_global"][min(1, len(attacker_buckets) - 1)]),
+        xytext=(min(1.28, max(0.0, len(attacker_buckets) - 0.7)), 26.0),
         arrowprops={
             "facecolor": "#1A1A1A",
             "shrink": 0.05,
@@ -971,7 +1013,8 @@ def plot_attacker_load_cliff(
     ax.grid(axis="y", linestyle="-", linewidth=0.5, color="#E5E5E5", zorder=1)
     ax.set_xticks(x)
     ax.set_xticklabels(bucket_labels, fontsize=11, fontweight="medium", color="#333333")
-    ax.set_ylim(0.0, 65.0)
+    max_series_value = max((max(values) for values in series.values()), default=0.0)
+    ax.set_ylim(0.0, max(65.0, max_series_value + 5.0))
 
     for spine in ("top", "right", "left"):
         ax.spines[spine].set_visible(False)
@@ -1000,8 +1043,8 @@ def plot_attacker_load_cliff(
     fig.text(
         0.5,
         0.03,
-        "Current architecture demonstrates robust moderate-load capability\n"
-        "but suffers acute fragmentation beyond 10 attackers.",
+        "Current architecture demonstrates how capability changes\n"
+        "as attacker load rises across randomized swarm sizes.",
         fontsize=10.75,
         fontstyle="italic",
         color="#666666",
@@ -1024,8 +1067,10 @@ def plot_residual_failure_space(
     results: list[Result], output_dir: Path, number: int
 ) -> FigureRecord:
     strategy = "optimized_global"
-    defender_counts = [5, 4, 3, 2]
-    attacker_counts = [5, 8, 11, 14, 17, 20]
+    defender_counts = list(
+        reversed(representative_values([result.defender_count for result in results], 4))
+    )
+    attacker_buckets = attacker_buckets_for(results)
     failure_matrix = np.array(
         [
             [
@@ -1035,11 +1080,11 @@ def plot_residual_failure_space(
                         for result in results
                         if result.strategy == strategy
                         and result.defender_count == defender_count
-                        and result.attacker_count == attacker_count
+                        and result.attacker_bucket == attacker_bucket
                     ]
                 ))
                 * 100.0
-                for attacker_count in attacker_counts
+                for attacker_bucket in attacker_buckets
             ]
             for defender_count in defender_counts
         ]
@@ -1055,11 +1100,11 @@ def plot_residual_failure_space(
     ax.set_facecolor("#FFFFFF")
     image = ax.imshow(failure_matrix, aspect="auto", cmap=cmap, vmin=0.0, vmax=100.0)
 
-    ax.set_xticks(np.arange(len(attacker_counts)), [str(value) for value in attacker_counts])
+    ax.set_xticks(np.arange(len(attacker_buckets)), attacker_buckets)
     ax.set_yticks(np.arange(len(defender_counts)), [str(value) for value in defender_counts])
     ax.tick_params(axis="both", which="both", length=0, labelsize=11, labelcolor="#333333")
 
-    ax.set_xticks(np.arange(-0.5, len(attacker_counts), 1), minor=True)
+    ax.set_xticks(np.arange(-0.5, len(attacker_buckets), 1), minor=True)
     ax.set_yticks(np.arange(-0.5, len(defender_counts), 1), minor=True)
     ax.grid(which="minor", color="#FFFFFF", linestyle="-", linewidth=4)
     ax.tick_params(which="minor", bottom=False, left=False)
@@ -1087,7 +1132,7 @@ def plot_residual_failure_space(
         loc="left",
     )
     ax.set_xlabel(
-        "Exact Attacker Swarm Size",
+        "Attacker Swarm Size Bucket",
         fontsize=12,
         fontweight="medium",
         color="#4A4A4A",
@@ -1189,7 +1234,7 @@ def plot_terminal_time_distribution(
         for artist in box[key]:
             artist.set_color("#222222")
     ax.set_title("Time to Terminal Event")
-    ax.set_ylabel("Simulated seconds until success or breach")
+    ax.set_ylabel("Simulated seconds until all attackers are resolved")
     ax.set_xticks(np.arange(1, len(strategies) + 1), [STRATEGY_LABELS[s] for s in strategies])
     filename = save_figure(fig, output_dir, "08_terminal_time_distribution")
     return FigureRecord(
@@ -1277,15 +1322,22 @@ def plot_optimized_global_delta(
 def pair_results(
     results: list[Result], strategy_a: str, strategy_b: str
 ) -> list[tuple[Result, Result]]:
-    by_key: dict[tuple[int, int, str], Result] = {}
+    by_key: dict[tuple[int, int, int, str], Result] = {}
     for result in results:
-        by_key[(result.run_id, result.scenario_seed, result.strategy)] = result
+        by_key[
+            (result.run_id, result.scenario_seed, result.defender_count, result.strategy)
+        ] = result
 
     pairs = []
-    scenario_keys = sorted({(result.run_id, result.scenario_seed) for result in results})
-    for run_id, scenario_seed in scenario_keys:
-        left = by_key.get((run_id, scenario_seed, strategy_a))
-        right = by_key.get((run_id, scenario_seed, strategy_b))
+    scenario_keys = sorted(
+        {
+            (result.run_id, result.scenario_seed, result.defender_count)
+            for result in results
+        }
+    )
+    for run_id, scenario_seed, defender_count in scenario_keys:
+        left = by_key.get((run_id, scenario_seed, defender_count, strategy_a))
+        right = by_key.get((run_id, scenario_seed, defender_count, strategy_b))
         if left is not None and right is not None:
             pairs.append((left, right))
     return pairs
@@ -1305,7 +1357,12 @@ def write_talking_points(
 ) -> None:
     grouped = group_by_strategy(results)
     strategies = ordered_strategies(results)
-    scenario_count = len({(result.run_id, result.scenario_seed) for result in results})
+    scenario_count = len(
+        {
+            (result.run_id, result.scenario_seed, result.defender_count)
+            for result in results
+        }
+    )
     best_success_strategy = max(strategies, key=lambda strategy: rate(grouped[strategy]))
     best_kill_ratio_strategy = max(
         strategies,
@@ -1403,7 +1460,7 @@ def write_talking_points(
     lines.extend(
         [
             "- **Deadline-first policies are not enough:** earliest-deadline variants are useful as urgency baselines, but they trail the optimized global policy in both success and mean kill ratio.",
-            "- **The result is still capacity constrained:** even the best strategy leaves substantial breach risk, so future gains likely require softer handoff rules, more defenders, faster defenders, or a shorter dwell requirement.",
+            "- **The result is still capacity constrained:** even the best strategy leaves pass-through risk, so future gains likely require softer handoff rules, more defenders, faster defenders, or a shorter dwell requirement.",
             "",
             "## Figure Guide",
             "",
@@ -1415,7 +1472,7 @@ def write_talking_points(
         )
 
     lines.extend(["", "## Overall Metrics", ""])
-    lines.append("| Strategy | Success rate | Mean kills | Mean kill ratio | Median terminal time |")
+    lines.append("| Strategy | Success rate | Mean kills | Mean kill ratio | Median completion time |")
     lines.append("| --- | ---: | ---: | ---: | ---: |")
     for strategy in strategies:
         values = grouped[strategy]
@@ -1432,7 +1489,7 @@ def write_talking_points(
     regime_rows = []
     for strategy in strategies:
         for defender_count in sorted({result.defender_count for result in results}):
-            for bucket in ATTACKER_BUCKET_ORDER:
+            for bucket in attacker_buckets_for(results):
                 subset = [
                     result
                     for result in results
@@ -1455,6 +1512,7 @@ def write_success_rate_matrix_markdown(results: list[Result], path: Path) -> Non
     grouped = group_by_strategy(results)
     strategies = ordered_strategies(results)
     defender_counts = sorted({result.defender_count for result in results})
+    attacker_buckets = attacker_buckets_for(results)
     lines = [
         "# Success Rate Matrix",
         "",
@@ -1469,16 +1527,16 @@ def write_success_rate_matrix_markdown(results: list[Result], path: Path) -> Non
                 f"## {SHORT_LABELS[strategy]}",
                 "",
                 "| Defense drones | "
-                + " | ".join(f"{bucket} attackers" for bucket in ATTACKER_BUCKET_ORDER)
+                + " | ".join(f"{bucket} attackers" for bucket in attacker_buckets)
                 + " |",
                 "| ---: | "
-                + " | ".join("---:" for _ in ATTACKER_BUCKET_ORDER)
+                + " | ".join("---:" for _ in attacker_buckets)
                 + " |",
             ]
         )
         for defender_count in defender_counts:
             row = [str(defender_count)]
-            for attacker_bucket in ATTACKER_BUCKET_ORDER:
+            for attacker_bucket in attacker_buckets:
                 subset = [
                     result
                     for result in values

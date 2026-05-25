@@ -8,11 +8,12 @@ from pathlib import Path
 
 import numpy as np
 
-from defensive_drones.engine import update_dwell_and_kills
-from defensive_drones.geometry import corridor_index_for_position, segment_reaches_sphere
+from defensive_drones.engine import simulate_scenario, update_dwell_and_kills
+from defensive_drones.geometry import corridor_index_for_position, norm, segment_reaches_sphere
 from defensive_drones.model import (
     Attacker,
     Defender,
+    MILE_TO_M,
     Observation,
     Scenario,
     SimulationConfig,
@@ -47,6 +48,38 @@ class ScenarioGenerationTests(unittest.TestCase):
         self.assertEqual(corridor_index_for_position(np.array([1.0, 0.0, 1.0]), 4), 1)
         self.assertEqual(corridor_index_for_position(np.array([1.0, -1.0, 0.0]), 4), 2)
         self.assertEqual(corridor_index_for_position(np.array([1.0, 0.0, -1.0]), 4), 3)
+
+    def test_default_attackers_are_high_load_and_spawn_near_five_miles(self) -> None:
+        scenario = generate_scenario(2026, SimulationConfig(), defender_count=10)
+
+        self.assertGreaterEqual(len(scenario.attackers), 250)
+        self.assertLessEqual(len(scenario.attackers), 350)
+        for attacker in scenario.attackers:
+            distance = norm(attacker.position)
+            self.assertGreaterEqual(distance, 4.5 * MILE_TO_M)
+            self.assertLessEqual(distance, 5.5 * MILE_TO_M)
+
+    def test_wide_hemisphere_spawn_spreads_attackers_across_corridors(self) -> None:
+        config = SimulationConfig(min_attackers=350, max_attackers=350)
+        scenario = generate_scenario(2027, config, defender_count=10)
+
+        self.assertTrue(all(attacker.position[0] >= 0.0 for attacker in scenario.attackers))
+        self.assertGreaterEqual(
+            len({attacker.corridor for attacker in scenario.attackers}),
+            8,
+        )
+
+    def test_same_seed_reuses_attacker_swarm_across_defender_counts(self) -> None:
+        config = SimulationConfig(min_attackers=25, max_attackers=25)
+        scenario_10 = generate_scenario(2028, config, defender_count=10)
+        scenario_20 = generate_scenario(2028, config, defender_count=20)
+
+        for attacker_10, attacker_20 in zip(
+            scenario_10.attackers, scenario_20.attackers
+        ):
+            np.testing.assert_allclose(attacker_10.position, attacker_20.position)
+            np.testing.assert_allclose(attacker_10.velocity, attacker_20.velocity)
+            self.assertEqual(attacker_10.speed_mps, attacker_20.speed_mps)
 
 
 class SimulationMechanicsTests(unittest.TestCase):
@@ -123,6 +156,50 @@ class SimulationMechanicsTests(unittest.TestCase):
                 5.0,
             )
         )
+
+    def test_simulation_continues_after_first_breach(self) -> None:
+        config = replace(
+            SimulationConfig(),
+            dt_s=1.0,
+            target_breach_radius_m=0.1,
+            sensor_position_sigma_m=0.0,
+            sensor_velocity_sigma_mps=0.0,
+        )
+        scenario = Scenario(
+            seed=8,
+            defenders=[],
+            attackers=[
+                Attacker(
+                    id=0,
+                    position=np.array([1.0, 0.0, 0.0]),
+                    velocity=np.array([-1.0, 0.0, 0.0]),
+                    speed_mps=1.0,
+                    corridor=0,
+                ),
+                Attacker(
+                    id=1,
+                    position=np.array([3.0, 0.0, 0.0]),
+                    velocity=np.array([-1.0, 0.0, 0.0]),
+                    speed_mps=1.0,
+                    corridor=0,
+                ),
+            ],
+        )
+
+        result = simulate_scenario(
+            scenario,
+            config,
+            strategy="optimized",
+            run_id=0,
+            observation_seed=1,
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.breaches, 2)
+        self.assertEqual(result.kills, 0)
+        self.assertEqual(result.first_breach_time_s, 1.0)
+        self.assertEqual(result.completion_time_s, 3.0)
+        self.assertEqual(result.breach_rate, 1.0)
 
 
 class StrategyTests(unittest.TestCase):
@@ -315,6 +392,33 @@ class StrategyTests(unittest.TestCase):
 
 
 class OutputSmokeTests(unittest.TestCase):
+    def test_run_monte_carlo_sweeps_defender_counts(self) -> None:
+        config = SimulationConfig(
+            min_defenders=10,
+            max_defenders=30,
+            defender_step=10,
+            min_attackers=3,
+            max_attackers=3,
+            min_spawn_distance_m=20.0,
+            max_spawn_distance_m=20.0,
+            min_attacker_speed_mps=20.0,
+            max_attacker_speed_mps=20.0,
+            dt_s=1.0,
+            sensor_position_sigma_m=0.0,
+            sensor_velocity_sigma_mps=0.0,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            results = run_monte_carlo(
+                runs=2,
+                seed=7,
+                out_dir=Path(directory),
+                config=config,
+                strategies=("optimized_global",),
+            )
+
+        self.assertEqual(len(results), 2 * 3)
+        self.assertEqual({result.defender_count for result in results}, {10, 20, 30})
+
     def test_smoke_run_writes_csv_and_png_outputs(self) -> None:
         config = SimulationConfig(
             min_defenders=2,
@@ -330,25 +434,36 @@ class OutputSmokeTests(unittest.TestCase):
             per_run = out_dir / "per_run_results.csv"
             summary = out_dir / "summary.csv"
             success_matrix = out_dir / "success_rate_matrix.csv"
+            breach_matrix = out_dir / "breach_rate_matrix.csv"
             status_log = out_dir / "run_status.log"
             self.assertTrue(per_run.exists())
             self.assertTrue(summary.exists())
             self.assertTrue(success_matrix.exists())
+            self.assertTrue(breach_matrix.exists())
             self.assertTrue(status_log.exists())
             self.assertTrue((out_dir / "success_rate_by_strategy.png").exists())
             self.assertTrue((out_dir / "success_rate_by_defender_count.png").exists())
             self.assertTrue((out_dir / "success_rate_by_attacker_count.png").exists())
             self.assertTrue((out_dir / "kill_ratio_distribution.png").exists())
             self.assertTrue((out_dir / "completion_time_distribution.png").exists())
+            self.assertTrue((out_dir / "breach_rate_by_defender_count.png").exists())
+            self.assertTrue((out_dir / "avg_breaches_by_defender_count.png").exists())
+            self.assertTrue((out_dir / "breach_rate_distribution.png").exists())
+            self.assertTrue((out_dir / "first_breach_time_distribution.png").exists())
 
             with per_run.open(newline="") as handle:
                 rows = list(csv.DictReader(handle))
             self.assertEqual(len(rows), 5 * len(STRATEGIES))
             self.assertIn("success", rows[0])
+            self.assertIn("breach_rate", rows[0])
+            self.assertIn("first_breach_time_s", rows[0])
             with success_matrix.open(newline="") as handle:
                 matrix_rows = list(csv.DictReader(handle))
             self.assertIn("defense_drones", matrix_rows[0])
             self.assertIn("attack_5_10", matrix_rows[0])
+            with breach_matrix.open(newline="") as handle:
+                breach_matrix_rows = list(csv.DictReader(handle))
+            self.assertIn("attack_5_10", breach_matrix_rows[0])
 
             log_text = status_log.read_text(encoding="utf-8")
             self.assertIn("START runs=5", log_text)

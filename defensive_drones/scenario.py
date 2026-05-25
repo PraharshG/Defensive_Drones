@@ -8,12 +8,19 @@ from defensive_drones.geometry import corridor_index_for_position
 from defensive_drones.model import Attacker, Defender, Scenario, SimulationConfig
 
 
-def generate_scenario(seed: int, config: SimulationConfig | None = None) -> Scenario:
+def generate_scenario(
+    seed: int,
+    config: SimulationConfig | None = None,
+    defender_count: int | None = None,
+    attacker_count: int | None = None,
+) -> Scenario:
     config = config or SimulationConfig()
     rng = np.random.default_rng(seed)
 
-    defender_count = int(rng.integers(config.min_defenders, config.max_defenders + 1))
-    attacker_count = int(rng.integers(config.min_attackers, config.max_attackers + 1))
+    if defender_count is None:
+        defender_count = int(rng.choice(config.defender_counts))
+    if attacker_count is None:
+        attacker_count = int(rng.integers(config.min_attackers, config.max_attackers + 1))
 
     defenders = [
         _make_defender(defender_id, defender_count, config)

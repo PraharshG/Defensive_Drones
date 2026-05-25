@@ -19,10 +19,19 @@ def simulate_scenario(
     dwell_times = np.zeros((len(scenario.defenders), len(scenario.attackers)), dtype=float)
     assignments: dict[int, int] = {}
     elapsed_s = 0.0
+    first_breach_time_s: float | None = None
 
     while True:
         if all(not attacker.alive for attacker in scenario.attackers):
-            return _result(run_id, scenario, strategy, elapsed_s, True)
+            success = all(not attacker.breached for attacker in scenario.attackers)
+            return _result(
+                run_id,
+                scenario,
+                strategy,
+                elapsed_s,
+                success,
+                first_breach_time_s,
+            )
 
         observations = observe_attackers(scenario, config, rng)
         assignments = choose_assignments(
@@ -41,11 +50,11 @@ def simulate_scenario(
 
         update_dwell_and_kills(scenario, dwell_times, config)
 
-        breached = _mark_breaches(
+        breached_ids = _mark_breaches(
             scenario, previous_attacker_positions, config
         )
-        if breached:
-            return _result(run_id, scenario, strategy, elapsed_s, False)
+        if breached_ids and first_breach_time_s is None:
+            first_breach_time_s = elapsed_s
 
 
 def observe_attackers(
@@ -73,22 +82,45 @@ def update_dwell_and_kills(
     dwell_times: np.ndarray,
     config: SimulationConfig,
 ) -> list[int]:
-    killed_ids: list[int] = []
-    for defender in scenario.defenders:
-        for attacker in scenario.attackers:
-            if not attacker.alive:
-                dwell_times[defender.id, attacker.id] = 0.0
-                continue
-            if norm(defender.position - attacker.position) <= config.kill_radius_m:
-                dwell_times[defender.id, attacker.id] += config.dt_s
-            else:
-                dwell_times[defender.id, attacker.id] = 0.0
+    if not scenario.defenders or not scenario.attackers:
+        return []
 
-            if dwell_times[defender.id, attacker.id] >= config.kill_dwell_s:
-                attacker.alive = False
-                attacker.killed = True
-                killed_ids.append(attacker.id)
-                dwell_times[:, attacker.id] = 0.0
+    dead_ids = [attacker.id for attacker in scenario.attackers if not attacker.alive]
+    if dead_ids:
+        dwell_times[:, dead_ids] = 0.0
+
+    live_attackers = [attacker for attacker in scenario.attackers if attacker.alive]
+    if not live_attackers:
+        return []
+
+    defender_positions = np.array(
+        [defender.position for defender in scenario.defenders], dtype=float
+    )
+    attacker_positions = np.array(
+        [attacker.position for attacker in live_attackers], dtype=float
+    )
+    live_ids = np.array([attacker.id for attacker in live_attackers], dtype=int)
+    distances = np.linalg.norm(
+        defender_positions[:, np.newaxis, :] - attacker_positions[np.newaxis, :, :],
+        axis=2,
+    )
+    live_dwell = dwell_times[:, live_ids]
+    dwell_times[:, live_ids] = np.where(
+        distances <= config.kill_radius_m,
+        live_dwell + config.dt_s,
+        0.0,
+    )
+
+    killed_ids = [
+        int(attacker_id)
+        for attacker_id in live_ids[
+            np.any(dwell_times[:, live_ids] >= config.kill_dwell_s, axis=0)
+        ]
+    ]
+    for attacker_id in killed_ids:
+        scenario.attackers[attacker_id].alive = False
+        scenario.attackers[attacker_id].killed = True
+        dwell_times[:, attacker_id] = 0.0
     return killed_ids
 
 
@@ -153,9 +185,9 @@ def _mark_breaches(
     scenario: Scenario,
     previous_attacker_positions: dict[int, np.ndarray],
     config: SimulationConfig,
-) -> bool:
+) -> list[int]:
     target = config.target_vector
-    breached_any = False
+    breached_ids: list[int] = []
     for attacker in scenario.attackers:
         if not attacker.alive:
             continue
@@ -165,8 +197,8 @@ def _mark_breaches(
         ):
             attacker.alive = False
             attacker.breached = True
-            breached_any = True
-    return breached_any
+            breached_ids.append(attacker.id)
+    return breached_ids
 
 
 def _result(
@@ -175,6 +207,7 @@ def _result(
     strategy: str,
     elapsed_s: float,
     success: bool,
+    first_breach_time_s: float | None,
 ) -> RunResult:
     kills = sum(1 for attacker in scenario.attackers if attacker.killed)
     breaches = sum(1 for attacker in scenario.attackers if attacker.breached)
@@ -188,4 +221,5 @@ def _result(
         breaches=breaches,
         success=success,
         completion_time_s=elapsed_s,
+        first_breach_time_s=first_breach_time_s,
     )

@@ -6,18 +6,31 @@ import numpy as np
 
 
 Vector = np.ndarray
+MILE_TO_M = 1609.344
+
+
+ATTACKER_BUCKET_RANGES = (
+    (5, 10, "5-10"),
+    (11, 15, "11-15"),
+    (16, 20, "16-20"),
+    (250, 274, "250-274"),
+    (275, 299, "275-299"),
+    (300, 324, "300-324"),
+    (325, 350, "325-350"),
+)
 
 
 @dataclass(frozen=True)
 class SimulationConfig:
-    min_defenders: int = 2
-    max_defenders: int = 5
-    min_attackers: int = 5
-    max_attackers: int = 20
+    min_defenders: int = 10
+    max_defenders: int = 100
+    defender_step: int = 10
+    min_attackers: int = 250
+    max_attackers: int = 350
     target: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    approach_cone_degrees: float = 12.0
-    min_spawn_distance_m: float = 800.0
-    max_spawn_distance_m: float = 1500.0
+    approach_cone_degrees: float = 90.0
+    min_spawn_distance_m: float = 4.5 * MILE_TO_M
+    max_spawn_distance_m: float = 5.5 * MILE_TO_M
     min_attacker_speed_mps: float = 18.0
     max_attacker_speed_mps: float = 25.0
     defender_ring_radius_m: float = 120.0
@@ -33,6 +46,12 @@ class SimulationConfig:
     @property
     def target_vector(self) -> Vector:
         return np.array(self.target, dtype=float)
+
+    @property
+    def defender_counts(self) -> tuple[int, ...]:
+        if self.defender_step <= 0:
+            raise ValueError("defender_step must be positive")
+        return tuple(range(self.min_defenders, self.max_defenders + 1, self.defender_step))
 
 
 @dataclass
@@ -108,6 +127,7 @@ class RunResult:
     breaches: int
     success: bool
     completion_time_s: float
+    first_breach_time_s: float | None = None
 
     @property
     def kill_ratio(self) -> float:
@@ -116,9 +136,26 @@ class RunResult:
         return self.kills / self.attacker_count
 
     @property
+    def breach_rate(self) -> float:
+        if self.attacker_count == 0:
+            return 0.0
+        return self.breaches / self.attacker_count
+
+    @property
     def attacker_bucket(self) -> str:
-        if self.attacker_count <= 10:
-            return "5-10"
-        if self.attacker_count <= 15:
-            return "11-15"
-        return "16-20"
+        return attacker_bucket_for_count(self.attacker_count)
+
+
+def attacker_bucket_for_count(attacker_count: int) -> str:
+    for lower, upper, label in ATTACKER_BUCKET_RANGES:
+        if lower <= attacker_count <= upper:
+            return label
+    bucket_width = 25
+    lower = (attacker_count // bucket_width) * bucket_width
+    upper = lower + bucket_width - 1
+    return f"{lower}-{upper}"
+
+
+def attacker_bucket_sort_key(bucket: str) -> tuple[int, int]:
+    lower, _, upper = bucket.partition("-")
+    return int(lower), int(upper or lower)

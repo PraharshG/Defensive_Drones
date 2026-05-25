@@ -12,10 +12,12 @@ intended for strategy comparison, not real flight control or weapons guidance.
 
 Each run creates one randomized 3D attack scenario:
 
-- 2-5 defensive drones protect a fixed target at `(0, 0, 0)`.
-- 5-20 attack drones spawn 800-1500 m away.
-- Attack drones come from the same approximate direction, sampled inside a
-  12-degree cone.
+- 10-100 defensive drones protect a fixed target at `(0, 0, 0)`, evaluated in
+  steps of 10 defenders.
+- 250-350 attack drones spawn roughly 5 miles away, with randomized distance
+  from 4.5-5.5 miles.
+- Attack drones are distributed across a wide positive-side hemisphere rather
+  than coming from one narrow approach area.
 - Each attack drone has its own sampled speed from 18-25 m/s.
 - Attack drone velocity is stored as state. In this first version, speeds are
   constant, but the model is structured so future versions can update velocity
@@ -25,8 +27,9 @@ Each run creates one randomized 3D attack scenario:
   those labels; global strategies ignore them so any defender can engage any
   attack drone.
 
-The simulation has no hard time deadline. A run ends when either all attack
-drones are down or at least one live attack drone reaches the target.
+The simulation has no hard time deadline. A run ends when all attack drones are
+resolved: each attacker is either killed by a defender or passes through the
+target breach radius.
 
 ## Theory
 
@@ -105,15 +108,16 @@ distance(defender, attacker) <= 5 m for 3.0 s
 The dwell timer resets if the defender leaves the 5 m radius before the 3-second
 requirement is met.
 
-A scenario fails immediately when any live attack drone reaches the target
-breach radius:
+An attack drone is counted as a breach when it reaches the target breach radius:
 
 ```text
 distance(attacker, target) <= 5 m
 ```
 
 Segment crossing is checked each time step so a fast attacker cannot skip past
-the target between discrete updates.
+the target between discrete updates. The simulation no longer terminates on the
+first breach; it continues so the final result captures how many attackers pass
+through. A scenario succeeds only when zero attackers breach.
 
 ### Strategies
 
@@ -178,8 +182,10 @@ model. It is not a proof of global optimality in real-world conditions.
 
 ## Outputs
 
-The default run evaluates 1000 randomized scenarios across all nine strategies,
-for 9000 strategy runs total.
+The default run evaluates 1000 randomized attacker swarms across 10 defender
+counts and all nine strategies, for 90,000 strategy runs total. Each attacker
+swarm is reused across the defender-count sweep so changes in outcome can be
+attributed to defender resources and strategy behavior.
 
 Outputs are written to `outputs/`:
 
@@ -187,6 +193,8 @@ Outputs are written to `outputs/`:
 - `summary.csv`: grouped aggregate metrics
 - `success_rate_matrix.csv`: defense-drone count by attack-drone bucket
   success-rate matrix for each strategy
+- `breach_rate_matrix.csv`: defense-drone count by attack-drone bucket
+  pass-through-rate matrix for each strategy
 - `run_status.log`: timestamped start, per-scenario, per-strategy, and finish
   status entries
 - `success_rate_by_strategy.png`
@@ -194,13 +202,19 @@ Outputs are written to `outputs/`:
 - `success_rate_by_attacker_count.png`
 - `kill_ratio_distribution.png`
 - `completion_time_distribution.png`
+- `breach_rate_by_defender_count.png`
+- `avg_breaches_by_defender_count.png`
+- `breach_rate_distribution.png`
+- `first_breach_time_distribution.png`
 
 Key metrics include:
 
 - success rate: fraction of runs where all attackers are killed
 - kills: number of attack drones killed before the run ends
 - breaches: number of attackers that reached the target
-- completion time: simulated seconds until success or breach
+- breach rate: breaches divided by total attackers
+- first breach time: simulated seconds until the first attacker passes through
+- completion time: simulated seconds until all attackers are killed or breached
 - kill ratio: kills divided by total attackers
 
 ## Setup
@@ -229,13 +243,13 @@ python -m pip install -r requirements.txt
 Run the default 1000-scenario simulation:
 
 ```bash
-python -m defensive_drones.simulate --runs 1000 --seed 42 --out outputs
+python -m defensive_drones.simulate --runs 1000 --seed 42 --out outputs --jobs 8
 ```
 
 Equivalent command without activating the environment:
 
 ```bash
-.venv/bin/python -m defensive_drones.simulate --runs 1000 --seed 42 --out outputs
+.venv/bin/python -m defensive_drones.simulate --runs 1000 --seed 42 --out outputs --jobs 8
 ```
 
 Run a smaller smoke simulation:
@@ -280,33 +294,21 @@ dwell-time kill logic, target breach detection, and output artifact generation.
 
 ## Current Baseline Result
 
-The committed `outputs/` directory was generated with:
+Regenerate the committed `outputs/` directory with:
 
 ```bash
-.venv/bin/python -m defensive_drones.simulate --runs 1000 --seed 42 --out outputs
+.venv/bin/python -m defensive_drones.simulate --runs 1000 --seed 42 --out outputs --jobs 8
 ```
 
-Overall aggregate results from the latest committed run:
+Then regenerate publication figures with:
 
-| Strategy | Runs | Success rate | Average kills | Average breaches |
-| --- | ---: | ---: | ---: | ---: |
-| optimized_global | 1000 | 0.250 | 6.379 | 0.764 |
-| optimized_collab | 1000 | 0.218 | 6.057 | 0.794 |
-| earliest_deadline_collab | 1000 | 0.211 | 6.290 | 0.803 |
-| nearest_collab | 1000 | 0.192 | 5.939 | 0.822 |
-| earliest_deadline_global | 1000 | 0.149 | 5.658 | 0.861 |
-| earliest_deadline | 1000 | 0.136 | 5.923 | 0.878 |
-| optimized | 1000 | 0.131 | 5.667 | 0.883 |
-| nearest | 1000 | 0.126 | 5.597 | 0.890 |
-| nearest_global | 1000 | 0.121 | 5.561 | 0.898 |
+```bash
+.venv/bin/python scripts/generate_publication_figures.py --input outputs/per_run_results.csv --out outputs/publication_figures
+```
 
-The low success rates are expected under the current default assumptions: hard
-corridor ownership for the original strategies, 5-20 attackers, 2-5 defenders,
-constant attacker motion toward the target, and a strict 3-second dwell
-requirement. The collaboration strategies show that corridor-first behavior can
-recover much of the benefit of full global assignment: `optimized_collab`
-improves success from `0.131` for corridor-restricted `optimized` to `0.218`,
-while `optimized_global` remains best overall at `0.250`.
+The baseline now evaluates 250-350 attackers, 10-100 defenders in steps of 10,
+and records both success/kill metrics and pass-through metrics for every
+strategy run.
 
 ## Project Layout
 

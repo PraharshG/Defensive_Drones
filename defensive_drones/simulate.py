@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
@@ -21,39 +23,112 @@ def run_monte_carlo(
     config: SimulationConfig | None = None,
     strategies: tuple[str, ...] = STRATEGIES,
     log_path: Path | None = None,
+    jobs: int = 1,
 ) -> list[RunResult]:
     config = config or SimulationConfig()
+    if jobs < 1:
+        raise ValueError("jobs must be at least 1")
     master_rng = np.random.default_rng(seed)
+    scenario_seeds = [
+        int(master_rng.integers(0, np.iinfo(np.uint32).max)) for _ in range(runs)
+    ]
+    defender_counts = config.defender_counts
     results: list[RunResult] = []
     status_log_path = log_path or out_dir / "run_status.log"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     with RunStatusLogger(status_log_path) as logger:
-        logger.started(runs, seed, strategies)
-        for run_id in range(runs):
-            scenario_seed = int(master_rng.integers(0, np.iinfo(np.uint32).max))
-            scenario = generate_scenario(scenario_seed, config)
-            logger.scenario_started(run_id, scenario_seed, scenario)
-
-            scenario_results: list[RunResult] = []
-            for strategy in strategies:
-                observation_seed = scenario_seed
-                result = simulate_scenario(
-                    scenario,
-                    config,
-                    strategy=strategy,
-                    run_id=run_id,
-                    observation_seed=observation_seed,
-                )
-                results.append(result)
-                scenario_results.append(result)
-                logger.strategy_completed(result)
-
-            logger.scenario_completed(run_id, scenario_results)
+        logger.started(runs, seed, strategies, defender_counts, jobs)
+        if jobs == 1:
+            for run_id, scenario_seed in enumerate(scenario_seeds):
+                for defender_count in defender_counts:
+                    cell_result = _run_scenario_cell(
+                        run_id, scenario_seed, defender_count, config, strategies
+                    )
+                    logger.scenario_started_counts(
+                        run_id,
+                        scenario_seed,
+                        cell_result.defender_count,
+                        cell_result.attacker_count,
+                    )
+                    results.extend(cell_result.results)
+                    for result in cell_result.results:
+                        logger.strategy_completed(result)
+                    logger.scenario_completed(run_id, cell_result.results)
+        else:
+            with ProcessPoolExecutor(max_workers=jobs) as executor:
+                futures = []
+                for run_id, scenario_seed in enumerate(scenario_seeds):
+                    for defender_count in defender_counts:
+                        logger.scenario_cell_queued(
+                            run_id, scenario_seed, defender_count
+                        )
+                        futures.append(
+                            executor.submit(
+                                _run_scenario_cell,
+                                run_id,
+                                scenario_seed,
+                                defender_count,
+                                config,
+                                strategies,
+                            )
+                        )
+                for future in as_completed(futures):
+                    cell_result = future.result()
+                    results.extend(cell_result.results)
+                    for result in cell_result.results:
+                        logger.strategy_completed(result)
+                    logger.scenario_completed(
+                        cell_result.run_id, cell_result.results
+                    )
         logger.finished(results, out_dir)
 
+    results.sort(
+        key=lambda result: (
+            result.run_id,
+            result.scenario_seed,
+            result.defender_count,
+            strategies.index(result.strategy),
+        )
+    )
     write_outputs(results, out_dir)
     return results
+
+
+@dataclass(frozen=True)
+class ScenarioCellResult:
+    run_id: int
+    scenario_seed: int
+    defender_count: int
+    attacker_count: int
+    results: list[RunResult]
+
+
+def _run_scenario_cell(
+    run_id: int,
+    scenario_seed: int,
+    defender_count: int,
+    config: SimulationConfig,
+    strategies: tuple[str, ...],
+) -> ScenarioCellResult:
+    scenario = generate_scenario(scenario_seed, config, defender_count=defender_count)
+    scenario_results = [
+        simulate_scenario(
+            scenario,
+            config,
+            strategy=strategy,
+            run_id=run_id,
+            observation_seed=scenario_seed,
+        )
+        for strategy in strategies
+    ]
+    return ScenarioCellResult(
+        run_id=run_id,
+        scenario_seed=scenario_seed,
+        defender_count=defender_count,
+        attacker_count=len(scenario.attackers),
+        results=scenario_results,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -78,6 +153,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=list(STRATEGIES),
         help="Strategies to evaluate.",
     )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Parallel scenario cells to run. Use 1 for serial execution.",
+    )
     return parser
 
 
@@ -89,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         out_dir=args.out,
         strategies=tuple(args.strategies),
         log_path=args.log,
+        jobs=args.jobs,
     )
     _print_console_summary(results, args.out, args.log or args.out / "run_status.log")
     return 0
@@ -99,12 +181,15 @@ def _print_console_summary(
 ) -> None:
     print(f"Wrote {len(results)} strategy runs to {out_dir}")
     print(f"Run status log: {log_path}")
-    print("strategy, defenders, attackers, runs, success_rate, avg_kills, avg_breaches")
+    print(
+        "strategy, defenders, attackers, runs, success_rate, avg_kills, "
+        "avg_breaches, avg_breach_rate"
+    )
     for row in summarize_results(results):
         print(
             f"{row['strategy']}, {row['defender_count']}, {row['attacker_bucket']}, "
             f"{row['runs']}, {row['success_rate']}, {row['avg_kills']}, "
-            f"{row['avg_breaches']}"
+            f"{row['avg_breaches']}, {row['avg_breach_rate']}"
         )
 
 
@@ -124,20 +209,52 @@ class RunStatusLogger:
         if self._handle is not None:
             self._handle.close()
 
-    def started(self, runs: int, seed: int, strategies: tuple[str, ...]) -> None:
+    def started(
+        self,
+        runs: int,
+        seed: int,
+        strategies: tuple[str, ...],
+        defender_counts: tuple[int, ...],
+        jobs: int,
+    ) -> None:
         self._write(
             "START "
             f"runs={runs} seed={seed} strategy_count={len(strategies)} "
-            f"strategies={','.join(strategies)}"
+            f"strategies={','.join(strategies)} "
+            f"defender_counts={','.join(str(count) for count in defender_counts)} "
+            f"scenario_cells={runs * len(defender_counts)} jobs={jobs}"
         )
 
     def scenario_started(
         self, run_id: int, scenario_seed: int, scenario: Scenario
     ) -> None:
+        self.scenario_started_counts(
+            run_id,
+            scenario_seed,
+            len(scenario.defenders),
+            len(scenario.attackers),
+        )
+
+    def scenario_started_counts(
+        self,
+        run_id: int,
+        scenario_seed: int,
+        defender_count: int,
+        attacker_count: int,
+    ) -> None:
         self._write(
             "SCENARIO_START "
             f"run_id={run_id} scenario_seed={scenario_seed} "
-            f"defenders={len(scenario.defenders)} attackers={len(scenario.attackers)}"
+            f"defenders={defender_count} attackers={attacker_count}"
+        )
+
+    def scenario_cell_queued(
+        self, run_id: int, scenario_seed: int, defender_count: int
+    ) -> None:
+        self._write(
+            "SCENARIO_START "
+            f"run_id={run_id} scenario_seed={scenario_seed} "
+            f"defenders={defender_count} attackers=pending"
         )
 
     def strategy_completed(self, result: RunResult) -> None:
@@ -146,8 +263,10 @@ class RunStatusLogger:
             f"run_id={result.run_id} strategy={result.strategy} "
             f"defenders={result.defender_count} attackers={result.attacker_count} "
             f"kills={result.kills} breaches={result.breaches} "
+            f"breach_rate={result.breach_rate:.4f} "
             f"success={int(result.success)} "
-            f"completion_time_s={result.completion_time_s:.2f}"
+            f"completion_time_s={result.completion_time_s:.2f} "
+            f"first_breach_time_s={_format_optional_seconds(result.first_breach_time_s)}"
         )
 
     def scenario_completed(
@@ -155,9 +274,13 @@ class RunStatusLogger:
     ) -> None:
         successes = sum(result.success for result in scenario_results)
         best_kills = max((result.kills for result in scenario_results), default=0)
+        defender_count = (
+            scenario_results[0].defender_count if scenario_results else "unknown"
+        )
         self._write(
             "SCENARIO_DONE "
             f"run_id={run_id} strategy_runs={len(scenario_results)} "
+            f"defenders={defender_count} "
             f"successful_strategies={successes} best_kills={best_kills}"
         )
 
@@ -174,6 +297,12 @@ class RunStatusLogger:
         timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self._handle.write(f"{timestamp} {message}\n")
         self._handle.flush()
+
+
+def _format_optional_seconds(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{value:.2f}"
 
 
 if __name__ == "__main__":
