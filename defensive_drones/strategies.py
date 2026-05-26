@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from defensive_drones.geometry import norm, time_to_target
-from defensive_drones.model import Attacker, Defender, Observation, Scenario, SimulationConfig
+from defensive_drones.geometry import norm
+from defensive_drones.model import Defender, Observation, Scenario, SimulationConfig
 
 
 STRATEGIES = (
@@ -34,6 +34,9 @@ def choose_assignments(
     base_strategy = _base_strategy(strategy)
     assignment_mode = _assignment_mode(strategy)
     assignments: dict[int, int] = {}
+    observed = _observed_arrays(scenario, observations, config)
+    if observed is None:
+        return assignments
 
     for defender in scenario.defenders:
         held_target = _held_target(
@@ -48,26 +51,16 @@ def choose_assignments(
             assignments[defender.id] = held_target
             continue
 
-        candidates = _candidates_for_defender(
-            defender, scenario, observations, assignment_mode
+        target_id = _choose_target_for_defender(
+            base_strategy,
+            assignment_mode,
+            defender,
+            observed,
+            config,
         )
-        if not candidates:
+        if target_id is None:
             continue
-        target = min(
-            candidates,
-            key=lambda attacker: (
-                _score_candidate(
-                    base_strategy,
-                    assignment_mode,
-                    defender,
-                    attacker,
-                    observations[attacker.id],
-                    config,
-                ),
-                attacker.id,
-            ),
-        )
-        assignments[defender.id] = target.id
+        assignments[defender.id] = target_id
 
     return assignments
 
@@ -115,62 +108,101 @@ def _held_target(
     return None
 
 
-def _candidates_for_defender(
-    defender: Defender,
+class ObservedAttackers:
+    def __init__(
+        self,
+        ids: np.ndarray,
+        corridors: np.ndarray,
+        positions: np.ndarray,
+        velocities: np.ndarray,
+        deadlines_s: np.ndarray,
+    ) -> None:
+        self.ids = ids
+        self.corridors = corridors
+        self.positions = positions
+        self.velocities = velocities
+        self.deadlines_s = deadlines_s
+
+
+def _observed_arrays(
     scenario: Scenario,
     observations: dict[int, Observation],
-    assignment_mode: str,
-) -> list[Attacker]:
-    live_observed = [
+    config: SimulationConfig,
+) -> ObservedAttackers | None:
+    attackers = [
         attacker
         for attacker in scenario.attackers
         if attacker.alive and attacker.active and attacker.id in observations
     ]
-    if assignment_mode == "global":
-        return live_observed
+    if not attackers:
+        return None
 
-    own_corridor = [
-        attacker for attacker in live_observed if attacker.corridor == defender.corridor
-    ]
-    if assignment_mode == "corridor":
-        return own_corridor
-    if own_corridor:
-        return own_corridor
-    return [attacker for attacker in live_observed if attacker.corridor != defender.corridor]
+    ids = np.array([attacker.id for attacker in attackers], dtype=int)
+    corridors = np.array([attacker.corridor for attacker in attackers], dtype=int)
+    positions = np.array([observations[attacker.id].position for attacker in attackers])
+    velocities = np.array([observations[attacker.id].velocity for attacker in attackers])
+    speeds = np.linalg.norm(velocities, axis=1)
+    target = config.target_vector
+    with np.errstate(divide="ignore", invalid="ignore"):
+        deadlines_s = np.linalg.norm(positions - target, axis=1) / speeds
+    deadlines_s = np.where(np.isfinite(deadlines_s), deadlines_s, np.inf)
+    return ObservedAttackers(ids, corridors, positions, velocities, deadlines_s)
 
 
-def _score_candidate(
+def _choose_target_for_defender(
     base_strategy: str,
     assignment_mode: str,
     defender: Defender,
-    attacker: Attacker,
-    observation: Observation,
+    observed: ObservedAttackers,
     config: SimulationConfig,
-) -> float:
-    if base_strategy == "nearest":
-        return norm(observation.position - defender.position)
-    if base_strategy == "earliest_deadline":
-        return time_to_target(
-            observation.position,
-            observation.velocity,
-            config.target_vector,
-        )
+) -> int | None:
+    if assignment_mode == "global":
+        mask = np.ones(len(observed.ids), dtype=bool)
+    else:
+        own_corridor = observed.corridors == defender.corridor
+        if assignment_mode == "corridor":
+            mask = own_corridor
+        elif np.any(own_corridor):
+            mask = own_corridor
+        else:
+            mask = observed.corridors != defender.corridor
 
-    rendezvous_s = norm(observation.position - defender.position) / max(
+    if not np.any(mask):
+        return None
+
+    scores = _scores_for_defender(base_strategy, assignment_mode, defender, observed, config)
+    masked_scores = np.where(mask, scores, np.inf)
+    if not np.any(np.isfinite(masked_scores)):
+        return None
+    return int(observed.ids[int(np.argmin(masked_scores))])
+
+
+def _scores_for_defender(
+    base_strategy: str,
+    assignment_mode: str,
+    defender: Defender,
+    observed: ObservedAttackers,
+    config: SimulationConfig,
+) -> np.ndarray:
+    distances = np.linalg.norm(observed.positions - defender.position, axis=1)
+    if base_strategy == "nearest":
+        return distances
+    if base_strategy == "earliest_deadline":
+        return observed.deadlines_s
+
+    rendezvous_s = distances / max(
         config.defender_max_speed_mps, 1e-9
     )
-    deadline_s = time_to_target(
-        observation.position,
-        observation.velocity,
-        config.target_vector,
+    slack_s = observed.deadlines_s - (rendezvous_s + config.kill_dwell_s)
+    scores = np.where(
+        slack_s >= 0.0,
+        rendezvous_s + 0.01 * observed.deadlines_s,
+        10_000.0 + 500.0 * np.abs(slack_s) + rendezvous_s,
     )
-    finish_s = rendezvous_s + config.kill_dwell_s
-    slack_s = deadline_s - finish_s
-    off_corridor_penalty = (
-        COLLABORATION_PENALTY
-        if assignment_mode == "collab" and attacker.corridor != defender.corridor
-        else 0.0
-    )
-    if slack_s >= 0.0:
-        return rendezvous_s + 0.01 * deadline_s + off_corridor_penalty
-    return 10_000.0 + 500.0 * abs(slack_s) + rendezvous_s + off_corridor_penalty
+    if assignment_mode == "collab":
+        scores = scores + np.where(
+            observed.corridors != defender.corridor,
+            COLLABORATION_PENALTY,
+            0.0,
+        )
+    return np.where(np.isfinite(scores), scores, np.inf)
