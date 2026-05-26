@@ -14,18 +14,20 @@ Each run creates one randomized 3D attack scenario:
 
 - 10-100 defensive drones protect a fixed target at `(0, 0, 0)`, evaluated in
   steps of 10 defenders.
-- 250-350 attack drones spawn roughly 5 miles away, with randomized distance
-  from 4.5-5.5 miles.
+- Attack drones arrive in 2-3 waves. Each wave contains 250-350 attackers that
+  spawn roughly 5 miles away, with randomized distance from 4.5-5.5 miles.
 - Attack drones are distributed across a wide positive-side hemisphere rather
   than coming from one narrow approach area.
 - Each attack drone has its own sampled speed from 18-25 m/s.
-- Attack drone velocity is stored as state. In this first version, speeds are
-  constant, but the model is structured so future versions can update velocity
-  over time.
+- Attack drone velocity is stored as state and changes over time in all three
+  dimensions through bounded target-seeking maneuvers.
 - Defensive drones start near the target on a defensive ring.
+- Defensive drones do not communicate with each other. Each defender makes an
+  independent target choice from its own observations, so multiple defenders can
+  pursue the same attacker.
 - Each defensive drone has an angular corridor label. Corridor strategies obey
-  those labels; global strategies ignore them so any defender can engage any
-  attack drone.
+  those labels; global strategies ignore them; collaboration strategies use a
+  corridor-first fallback rule when a defender has no local targets.
 
 The simulation has no hard time deadline. A run ends when all attack drones are
 resolved: each attacker is either killed by a defender or passes through the
@@ -41,6 +43,7 @@ Each attack drone has:
 - velocity `v_a`
 - scalar speed
 - assigned corridor
+- wave id and spawn time
 - live, killed, and breached status
 
 Each defensive drone has:
@@ -49,9 +52,12 @@ Each defensive drone has:
 - velocity `v_d`
 - assigned corridor
 
-Attack drones move directly toward the target with constant velocity:
+Attack drones maintain target-seeking radial progress while adding bounded
+lateral maneuver velocity. This makes `x`, `y`, and `z` velocity components vary
+over time:
 
 ```text
+v_a(t) = target_direction * base_speed + bounded_lateral_maneuver(t)
 p_a(t + dt) = p_a(t) + v_a * dt
 ```
 
@@ -76,13 +82,12 @@ uses the lateral `y-z` angle of each attacker position:
 angle = atan2(z, y)
 ```
 
-The full circle is split into one sector per defender. This creates hard
-ownership for corridor-restricted strategies: defender `i` can only target
-attackers whose lateral angle falls in corridor `i`.
-
-This keeps the first version simple and makes strategy comparison easier because
-the assignment problem can be tested both with local corridor ownership and with
-global target allocation.
+The full circle is split into one sector per defender. Corridor-restricted
+strategies let each defender consider only attackers whose lateral angle falls
+in that defender's corridor. Global strategies let each defender consider every
+observed active attacker. Collaboration strategies first use the defender's own
+corridor and fall back to off-corridor targets only when the defender has no
+local candidates.
 
 ### Sensing
 
@@ -121,16 +126,14 @@ through. A scenario succeeds only when zero attackers breach.
 
 ### Strategies
 
-The simulator compares nine strategies on the same randomized scenarios. The
-first three obey hard corridor ownership; the `_global` variants remove corridor
-ownership entirely; the `_collab` variants keep corridors but let idle defenders
-assist overloaded neighboring corridors.
+The simulator compares nine strategy labels on the same randomized scenarios.
+All strategies are autonomous: there is no shared assignment table and no target
+deconfliction between defenders.
 
 1. `optimized`
    - Uses receding-horizon assignment.
    - Replans every time step from noisy observations.
-   - Uses `scipy.optimize.linear_sum_assignment` for defender-to-attacker
-     matching.
+   - Each defender independently scores candidate attackers.
    - Scores targets by conservative rendezvous time plus target deadline risk.
    - Keeps a defender locked on a near-capture target to preserve dwell time.
    - Only considers attackers inside the defender's corridor.
@@ -148,7 +151,7 @@ assist overloaded neighboring corridors.
 
 4. `optimized_global`
    - Same assignment objective as `optimized`, but it removes corridor limits.
-   - Any defender can be assigned to any live attacker.
+   - Any defender can independently choose any live observed attacker.
    - Near-capture lock also ignores corridors so a defender does not abandon a
      dwell capture after crossing sector boundaries.
 
@@ -163,33 +166,32 @@ assist overloaded neighboring corridors.
 7. `optimized_collab`
    - Uses the optimized corridor assignment first.
    - If a defender's own corridor has no live attackers, that defender may
-     assist a corridor that still has unassigned attackers.
+     independently choose an off-corridor attacker.
    - Assisted assignments use the same rendezvous/deadline cost with a small
      off-corridor collaboration penalty.
 
 8. `nearest_collab`
    - Uses nearest-target corridor assignment first.
-   - Idle defenders with empty corridors assist overloaded corridors by
-     selecting the nearest remaining target.
+   - Defenders with empty corridors choose the nearest off-corridor target.
 
 9. `earliest_deadline_collab`
    - Uses earliest-deadline corridor assignment first.
-   - Idle defenders with empty corridors assist overloaded corridors by
-     selecting the most urgent remaining target.
+   - Defenders with empty corridors choose the most urgent off-corridor target.
 
 The term "optimized" here means optimized under this simplified simulation
 model. It is not a proof of global optimality in real-world conditions.
 
 ## Outputs
 
-The default run evaluates 1000 randomized attacker swarms across 10 defender
-counts and all nine strategies, for 90,000 strategy runs total. Each attacker
-swarm is reused across the defender-count sweep so changes in outcome can be
-attributed to defender resources and strategy behavior.
+The default run evaluates 1000 randomized attacker-wave scenarios across 10
+defender counts and all nine strategies, for 90,000 strategy runs total. Each
+attacker-wave scenario is reused across the defender-count sweep so changes in
+outcome can be attributed to defender resources and strategy behavior.
 
 Outputs are written to `outputs/`:
 
 - `per_run_results.csv`: one row per strategy run
+- `wave_summary.csv`: one row per attacker wave per strategy run
 - `summary.csv`: grouped aggregate metrics
 - `success_rate_matrix.csv`: defense-drone count by attack-drone bucket
   success-rate matrix for each strategy
@@ -206,6 +208,10 @@ Outputs are written to `outputs/`:
 - `avg_breaches_by_defender_count.png`
 - `breach_rate_distribution.png`
 - `first_breach_time_distribution.png`
+- `breach_rate_by_wave.png`
+- `kill_ratio_by_wave.png`
+- `contention_rate_by_strategy.png`
+- `max_contention_distribution.png`
 
 Key metrics include:
 
@@ -216,6 +222,11 @@ Key metrics include:
 - first breach time: simulated seconds until the first attacker passes through
 - completion time: simulated seconds until all attackers are killed or breached
 - kill ratio: kills divided by total attackers
+- duplicate target assignments: extra defenders assigned to already selected
+  targets in a time step
+- contention rate: duplicate target assignments divided by total assignments
+- max simultaneous defenders on target: peak number of defenders independently
+  assigned to the same attacker
 
 ## Setup
 
@@ -258,6 +269,30 @@ Run a smaller smoke simulation:
 python -m defensive_drones.simulate --runs 10 --seed 42 --out outputs_smoke
 ```
 
+## Run on a Server
+
+Check out this branch and run the server script:
+
+```bash
+git checkout praharsh_dev_v3
+RUNS=1000 JOBS=$(nproc) OUT_DIR=outputs_server bash scripts/run_server_simulation.sh
+```
+
+Useful environment variables:
+
+- `RUNS`: number of randomized attacker-wave scenarios, default `1000`
+- `SEED`: master random seed, default `42`
+- `JOBS`: parallel scenario cells, default `nproc`
+- `OUT_DIR`: output directory, default `outputs_server`
+- `GENERATE_FIGURES`: set to `0` to skip publication figure generation
+- `STRATEGIES`: optional space-separated strategy list
+
+Small server smoke check:
+
+```bash
+RUNS=1 JOBS=1 GENERATE_FIGURES=0 OUT_DIR=/tmp/defensive_drones_smoke bash scripts/run_server_simulation.sh
+```
+
 Write the status log to a custom path:
 
 ```bash
@@ -288,9 +323,10 @@ Or without activating the environment:
 .venv/bin/python -m unittest
 ```
 
-The tests cover deterministic scenario generation, independent attacker speeds,
-corridor assignment, global strategy assignment, collaboration behavior,
-dwell-time kill logic, target breach detection, and output artifact generation.
+The tests cover deterministic scenario generation, wave activation, independent
+attacker speeds, maneuvering velocity, autonomous duplicate assignments,
+contention metrics, corridor/global/collaboration behavior, dwell-time kill
+logic, target breach detection, and output artifact generation.
 
 ## Current Baseline Result
 
@@ -306,9 +342,9 @@ Then regenerate publication figures with:
 .venv/bin/python scripts/generate_publication_figures.py --input outputs/per_run_results.csv --out outputs/publication_figures
 ```
 
-The baseline now evaluates 250-350 attackers, 10-100 defenders in steps of 10,
-and records both success/kill metrics and pass-through metrics for every
-strategy run.
+The baseline now evaluates 2-3 waves of 250-350 attackers each, 10-100
+defenders in steps of 10, and records success/kill, pass-through, per-wave, and
+target-contention metrics for every strategy run.
 
 ## Project Layout
 
@@ -320,7 +356,7 @@ defensive_drones/
   reporting.py   CSV and PNG output generation
   scenario.py    randomized scenario generation
   simulate.py    command line entry point
-  strategies.py  target assignment strategies
+  strategies.py  autonomous target selection strategies
 tests/
   test_simulation.py
 outputs/
@@ -329,14 +365,13 @@ outputs/
 
 ## Limitations and Future Work
 
-The first version deliberately excludes battery limits, communication delay,
-collision avoidance, real flight dynamics, payload constraints, and visual
-simulation.
+The simulation deliberately excludes battery limits, collision avoidance, real
+flight dynamics, payload constraints, and visual simulation.
 
 Useful next improvements:
 
-- allow attacker speeds and headings to change over time
 - tune defender speed, acceleration, spawn distance, and dwell-time parameters
 - add soft corridor handoff between neighboring defenders
 - add layered defense corridors based on distance from target
 - add richer summary tables for per-corridor load and kill timing
+- add explicit communication-delay experiments as a comparison case

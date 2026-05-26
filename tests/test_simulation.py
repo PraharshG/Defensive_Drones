@@ -8,7 +8,13 @@ from pathlib import Path
 
 import numpy as np
 
-from defensive_drones.engine import simulate_scenario, update_dwell_and_kills
+from defensive_drones.engine import (
+    activate_attackers,
+    observe_attackers,
+    simulate_scenario,
+    update_attacker_velocities,
+    update_dwell_and_kills,
+)
 from defensive_drones.geometry import corridor_index_for_position, norm, segment_reaches_sphere
 from defensive_drones.model import (
     Attacker,
@@ -25,7 +31,14 @@ from defensive_drones.strategies import STRATEGIES, choose_assignments
 
 class ScenarioGenerationTests(unittest.TestCase):
     def test_fixed_seed_is_repeatable(self) -> None:
-        config = SimulationConfig(min_defenders=3, max_defenders=3)
+        config = SimulationConfig(
+            min_defenders=3,
+            max_defenders=3,
+            min_attackers=4,
+            max_attackers=4,
+            min_waves=2,
+            max_waves=2,
+        )
         first = generate_scenario(1234, config)
         second = generate_scenario(1234, config)
 
@@ -36,9 +49,17 @@ class ScenarioGenerationTests(unittest.TestCase):
             np.testing.assert_allclose(left.velocity, right.velocity)
             self.assertEqual(left.speed_mps, right.speed_mps)
             self.assertEqual(left.corridor, right.corridor)
+            self.assertEqual(left.wave_id, right.wave_id)
+            self.assertEqual(left.spawn_time_s, right.spawn_time_s)
+            self.assertEqual(left.active, right.active)
 
     def test_attackers_have_independent_sampled_speeds(self) -> None:
-        config = SimulationConfig(min_attackers=12, max_attackers=12)
+        config = SimulationConfig(
+            min_attackers=12,
+            max_attackers=12,
+            min_waves=1,
+            max_waves=1,
+        )
         scenario = generate_scenario(99, config)
         speeds = {round(attacker.speed_mps, 6) for attacker in scenario.attackers}
         self.assertGreater(len(speeds), 1)
@@ -51,16 +72,35 @@ class ScenarioGenerationTests(unittest.TestCase):
 
     def test_default_attackers_are_high_load_and_spawn_near_five_miles(self) -> None:
         scenario = generate_scenario(2026, SimulationConfig(), defender_count=10)
+        wave_ids = sorted({attacker.wave_id for attacker in scenario.attackers})
 
-        self.assertGreaterEqual(len(scenario.attackers), 250)
-        self.assertLessEqual(len(scenario.attackers), 350)
+        self.assertIn(len(wave_ids), {2, 3})
+        for wave_id in wave_ids:
+            wave_attackers = [
+                attacker for attacker in scenario.attackers if attacker.wave_id == wave_id
+            ]
+            self.assertGreaterEqual(len(wave_attackers), 250)
+            self.assertLessEqual(len(wave_attackers), 350)
+            self.assertEqual(
+                {attacker.spawn_time_s for attacker in wave_attackers},
+                {wave_id * SimulationConfig().wave_spacing_s},
+            )
         for attacker in scenario.attackers:
             distance = norm(attacker.position)
             self.assertGreaterEqual(distance, 4.5 * MILE_TO_M)
             self.assertLessEqual(distance, 5.5 * MILE_TO_M)
+        self.assertTrue(all(attacker.active for attacker in scenario.attackers if attacker.wave_id == 0))
+        self.assertTrue(
+            all(not attacker.active for attacker in scenario.attackers if attacker.wave_id > 0)
+        )
 
     def test_wide_hemisphere_spawn_spreads_attackers_across_corridors(self) -> None:
-        config = SimulationConfig(min_attackers=350, max_attackers=350)
+        config = SimulationConfig(
+            min_attackers=350,
+            max_attackers=350,
+            min_waves=1,
+            max_waves=1,
+        )
         scenario = generate_scenario(2027, config, defender_count=10)
 
         self.assertTrue(all(attacker.position[0] >= 0.0 for attacker in scenario.attackers))
@@ -70,7 +110,12 @@ class ScenarioGenerationTests(unittest.TestCase):
         )
 
     def test_same_seed_reuses_attacker_swarm_across_defender_counts(self) -> None:
-        config = SimulationConfig(min_attackers=25, max_attackers=25)
+        config = SimulationConfig(
+            min_attackers=25,
+            max_attackers=25,
+            min_waves=2,
+            max_waves=2,
+        )
         scenario_10 = generate_scenario(2028, config, defender_count=10)
         scenario_20 = generate_scenario(2028, config, defender_count=20)
 
@@ -80,6 +125,46 @@ class ScenarioGenerationTests(unittest.TestCase):
             np.testing.assert_allclose(attacker_10.position, attacker_20.position)
             np.testing.assert_allclose(attacker_10.velocity, attacker_20.velocity)
             self.assertEqual(attacker_10.speed_mps, attacker_20.speed_mps)
+            self.assertEqual(attacker_10.wave_id, attacker_20.wave_id)
+            self.assertEqual(attacker_10.spawn_time_s, attacker_20.spawn_time_s)
+
+    def test_future_waves_are_not_observed_or_targetable_before_spawn(self) -> None:
+        config = SimulationConfig(
+            min_defenders=1,
+            max_defenders=1,
+            min_attackers=2,
+            max_attackers=2,
+            min_waves=2,
+            max_waves=2,
+            wave_spacing_s=10.0,
+            sensor_position_sigma_m=0.0,
+            sensor_velocity_sigma_mps=0.0,
+        )
+        scenario = generate_scenario(2029, config, defender_count=1)
+        observations = observe_attackers(scenario, config, np.random.default_rng(1))
+        dwell = np.zeros((1, len(scenario.attackers)), dtype=float)
+
+        assignments = choose_assignments(
+            "nearest_global", scenario, observations, config, {}, dwell
+        )
+
+        self.assertEqual({scenario.attackers[target].wave_id for target in assignments.values()}, {0})
+        self.assertEqual({attacker.wave_id for attacker in scenario.attackers if attacker.active}, {0})
+
+    def test_future_wave_activates_at_spawn_time(self) -> None:
+        config = SimulationConfig(
+            min_attackers=1,
+            max_attackers=1,
+            min_waves=2,
+            max_waves=2,
+            wave_spacing_s=10.0,
+        )
+        scenario = generate_scenario(2030, config, defender_count=1)
+
+        self.assertEqual(activate_attackers(scenario, 9.99), [])
+        self.assertFalse(scenario.attackers[1].active)
+        self.assertEqual(activate_attackers(scenario, 10.0), [1])
+        self.assertTrue(scenario.attackers[1].active)
 
 
 class SimulationMechanicsTests(unittest.TestCase):
@@ -157,6 +242,40 @@ class SimulationMechanicsTests(unittest.TestCase):
             )
         )
 
+    def test_attacker_velocity_maneuvers_in_three_dimensions(self) -> None:
+        config = replace(
+            SimulationConfig(),
+            target=(0.0, 0.0, 0.0),
+        )
+        scenario = Scenario(
+            seed=9,
+            defenders=[],
+            attackers=[
+                Attacker(
+                    id=0,
+                    position=np.array([100.0, 40.0, 30.0]),
+                    velocity=np.zeros(3),
+                    speed_mps=20.0,
+                    corridor=0,
+                    maneuver_amplitude_mps=3.0,
+                    maneuver_frequency_rad_s=0.4,
+                    maneuver_phase_rad=0.3,
+                    maneuver_secondary_phase_rad=1.1,
+                )
+            ],
+        )
+
+        update_attacker_velocities(scenario, config, elapsed_s=0.0)
+        first_velocity = scenario.attackers[0].velocity.copy()
+        update_attacker_velocities(scenario, config, elapsed_s=5.0)
+        second_velocity = scenario.attackers[0].velocity.copy()
+        target_direction = -scenario.attackers[0].position / norm(
+            scenario.attackers[0].position
+        )
+
+        self.assertTrue(np.all(np.abs(first_velocity - second_velocity) > 1e-6))
+        self.assertGreater(np.dot(second_velocity, target_direction), 0.0)
+
     def test_simulation_continues_after_first_breach(self) -> None:
         config = replace(
             SimulationConfig(),
@@ -200,6 +319,44 @@ class SimulationMechanicsTests(unittest.TestCase):
         self.assertEqual(result.first_breach_time_s, 1.0)
         self.assertEqual(result.completion_time_s, 3.0)
         self.assertEqual(result.breach_rate, 1.0)
+
+    def test_contention_metrics_record_duplicate_assignments(self) -> None:
+        config = replace(
+            SimulationConfig(),
+            dt_s=1.0,
+            kill_dwell_s=1.0,
+            sensor_position_sigma_m=0.0,
+            sensor_velocity_sigma_mps=0.0,
+        )
+        scenario = Scenario(
+            seed=10,
+            defenders=[
+                Defender(0, np.zeros(3), np.zeros(3), 0),
+                Defender(1, np.zeros(3), np.zeros(3), 0),
+            ],
+            attackers=[
+                Attacker(
+                    id=0,
+                    position=np.array([4.0, 0.0, 0.0]),
+                    velocity=np.zeros(3),
+                    speed_mps=0.0,
+                    corridor=0,
+                )
+            ],
+        )
+
+        result = simulate_scenario(
+            scenario,
+            config,
+            strategy="nearest",
+            run_id=0,
+            observation_seed=1,
+        )
+
+        self.assertEqual(result.duplicate_target_assignments, 1)
+        self.assertEqual(result.total_assignments, 2)
+        self.assertEqual(result.contention_rate, 0.5)
+        self.assertEqual(result.max_simultaneous_defenders_on_target, 2)
 
 
 class StrategyTests(unittest.TestCase):
@@ -363,8 +520,42 @@ class StrategyTests(unittest.TestCase):
         )
 
         self.assertEqual(set(assignment), {0, 1})
-        self.assertEqual(set(assignment.values()), {0, 1})
-        self.assertEqual(len(set(assignment.values())), len(assignment.values()))
+        self.assertEqual(assignment[0], 0)
+        self.assertEqual(assignment[1], 0)
+
+    def test_autonomous_defenders_can_duplicate_target_assignments(self) -> None:
+        config = SimulationConfig()
+        scenario = Scenario(
+            seed=7,
+            defenders=[
+                Defender(0, np.zeros(3), np.zeros(3), 0),
+                Defender(1, np.zeros(3), np.zeros(3), 0),
+            ],
+            attackers=[
+                Attacker(
+                    id=0,
+                    position=np.array([20.0, 0.0, 0.0]),
+                    velocity=np.array([-20.0, 0.0, 0.0]),
+                    speed_mps=20.0,
+                    corridor=0,
+                ),
+                Attacker(
+                    id=1,
+                    position=np.array([30.0, 0.0, 0.0]),
+                    velocity=np.array([-20.0, 0.0, 0.0]),
+                    speed_mps=20.0,
+                    corridor=0,
+                ),
+            ],
+        )
+        observations = _observations_for(scenario)
+        dwell = np.zeros((2, 2), dtype=float)
+
+        assignment = choose_assignments(
+            "nearest", scenario, observations, config, {}, dwell
+        )
+
+        self.assertEqual(assignment, {0: 0, 1: 0})
 
     def test_collab_near_capture_lock_can_hold_assisted_target(self) -> None:
         config = SimulationConfig()
@@ -399,6 +590,8 @@ class OutputSmokeTests(unittest.TestCase):
             defender_step=10,
             min_attackers=3,
             max_attackers=3,
+            min_waves=1,
+            max_waves=1,
             min_spawn_distance_m=20.0,
             max_spawn_distance_m=20.0,
             min_attacker_speed_mps=20.0,
@@ -425,6 +618,15 @@ class OutputSmokeTests(unittest.TestCase):
             max_defenders=2,
             min_attackers=5,
             max_attackers=5,
+            min_waves=1,
+            max_waves=1,
+            min_spawn_distance_m=30.0,
+            max_spawn_distance_m=30.0,
+            min_attacker_speed_mps=20.0,
+            max_attacker_speed_mps=20.0,
+            dt_s=1.0,
+            sensor_position_sigma_m=0.0,
+            sensor_velocity_sigma_mps=0.0,
         )
         with tempfile.TemporaryDirectory() as directory:
             out_dir = Path(directory)
@@ -432,11 +634,13 @@ class OutputSmokeTests(unittest.TestCase):
 
             self.assertEqual(len(results), 5 * len(STRATEGIES))
             per_run = out_dir / "per_run_results.csv"
+            wave_summary = out_dir / "wave_summary.csv"
             summary = out_dir / "summary.csv"
             success_matrix = out_dir / "success_rate_matrix.csv"
             breach_matrix = out_dir / "breach_rate_matrix.csv"
             status_log = out_dir / "run_status.log"
             self.assertTrue(per_run.exists())
+            self.assertTrue(wave_summary.exists())
             self.assertTrue(summary.exists())
             self.assertTrue(success_matrix.exists())
             self.assertTrue(breach_matrix.exists())
@@ -450,13 +654,25 @@ class OutputSmokeTests(unittest.TestCase):
             self.assertTrue((out_dir / "avg_breaches_by_defender_count.png").exists())
             self.assertTrue((out_dir / "breach_rate_distribution.png").exists())
             self.assertTrue((out_dir / "first_breach_time_distribution.png").exists())
+            self.assertTrue((out_dir / "breach_rate_by_wave.png").exists())
+            self.assertTrue((out_dir / "kill_ratio_by_wave.png").exists())
+            self.assertTrue((out_dir / "contention_rate_by_strategy.png").exists())
+            self.assertTrue((out_dir / "max_contention_distribution.png").exists())
 
             with per_run.open(newline="") as handle:
                 rows = list(csv.DictReader(handle))
             self.assertEqual(len(rows), 5 * len(STRATEGIES))
             self.assertIn("success", rows[0])
+            self.assertIn("wave_count", rows[0])
             self.assertIn("breach_rate", rows[0])
             self.assertIn("first_breach_time_s", rows[0])
+            self.assertIn("contention_rate", rows[0])
+            self.assertIn("max_simultaneous_defenders_on_target", rows[0])
+            with wave_summary.open(newline="") as handle:
+                wave_rows = list(csv.DictReader(handle))
+            self.assertEqual(len(wave_rows), 5 * len(STRATEGIES))
+            self.assertIn("wave_id", wave_rows[0])
+            self.assertIn("breach_rate", wave_rows[0])
             with success_matrix.open(newline="") as handle:
                 matrix_rows = list(csv.DictReader(handle))
             self.assertIn("defense_drones", matrix_rows[0])

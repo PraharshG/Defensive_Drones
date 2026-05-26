@@ -19,17 +19,40 @@ def generate_scenario(
 
     if defender_count is None:
         defender_count = int(rng.choice(config.defender_counts))
-    if attacker_count is None:
-        attacker_count = int(rng.integers(config.min_attackers, config.max_attackers + 1))
+    if config.min_waves < 1:
+        raise ValueError("min_waves must be at least 1")
+    if config.max_waves < config.min_waves:
+        raise ValueError("max_waves must be greater than or equal to min_waves")
+    if config.wave_spacing_s < 0.0:
+        raise ValueError("wave_spacing_s must be non-negative")
+
+    wave_count = int(rng.integers(config.min_waves, config.max_waves + 1))
 
     defenders = [
         _make_defender(defender_id, defender_count, config)
         for defender_id in range(defender_count)
     ]
-    attackers = [
-        _make_attacker(attacker_id, defender_count, rng, config)
-        for attacker_id in range(attacker_count)
-    ]
+    attackers: list[Attacker] = []
+    attacker_id = 0
+    for wave_id in range(wave_count):
+        wave_attacker_count = (
+            attacker_count
+            if attacker_count is not None
+            else int(rng.integers(config.min_attackers, config.max_attackers + 1))
+        )
+        spawn_time_s = wave_id * config.wave_spacing_s
+        for _ in range(wave_attacker_count):
+            attackers.append(
+                _make_attacker(
+                    attacker_id,
+                    defender_count,
+                    wave_id,
+                    spawn_time_s,
+                    rng,
+                    config,
+                )
+            )
+            attacker_id += 1
     return Scenario(seed=seed, defenders=defenders, attackers=attackers)
 
 
@@ -59,6 +82,8 @@ def _make_defender(
 def _make_attacker(
     attacker_id: int,
     defender_count: int,
+    wave_id: int,
+    spawn_time_s: float,
     rng: np.random.Generator,
     config: SimulationConfig,
 ) -> Attacker:
@@ -81,10 +106,29 @@ def _make_attacker(
         rng.uniform(config.min_attacker_speed_mps, config.max_attacker_speed_mps)
     )
     velocity = -direction_from_target * speed
+    maneuver_amplitude = float(
+        rng.uniform(
+            config.min_attacker_maneuver_amplitude_mps,
+            config.max_attacker_maneuver_amplitude_mps,
+        )
+    )
+    maneuver_frequency = float(
+        rng.uniform(
+            config.min_attacker_maneuver_frequency_rad_s,
+            config.max_attacker_maneuver_frequency_rad_s,
+        )
+    )
     return Attacker(
         id=attacker_id,
         position=position,
         velocity=velocity,
         speed_mps=speed,
         corridor=corridor_index_for_position(position, defender_count),
+        wave_id=wave_id,
+        spawn_time_s=spawn_time_s,
+        active=spawn_time_s <= 0.0,
+        maneuver_amplitude_mps=maneuver_amplitude,
+        maneuver_frequency_rad_s=maneuver_frequency,
+        maneuver_phase_rad=float(rng.uniform(0.0, 2.0 * math.pi)),
+        maneuver_secondary_phase_rad=float(rng.uniform(0.0, 2.0 * math.pi)),
     )

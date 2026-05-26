@@ -17,6 +17,11 @@ ATTACKER_BUCKET_RANGES = (
     (275, 299, "275-299"),
     (300, 324, "300-324"),
     (325, 350, "325-350"),
+    (500, 599, "500-599"),
+    (600, 700, "600-700"),
+    (750, 849, "750-849"),
+    (850, 949, "850-949"),
+    (950, 1050, "950-1050"),
 )
 
 
@@ -27,12 +32,19 @@ class SimulationConfig:
     defender_step: int = 10
     min_attackers: int = 250
     max_attackers: int = 350
+    min_waves: int = 2
+    max_waves: int = 3
+    wave_spacing_s: float = 120.0
     target: tuple[float, float, float] = (0.0, 0.0, 0.0)
     approach_cone_degrees: float = 90.0
     min_spawn_distance_m: float = 4.5 * MILE_TO_M
     max_spawn_distance_m: float = 5.5 * MILE_TO_M
     min_attacker_speed_mps: float = 18.0
     max_attacker_speed_mps: float = 25.0
+    min_attacker_maneuver_amplitude_mps: float = 0.5
+    max_attacker_maneuver_amplitude_mps: float = 4.0
+    min_attacker_maneuver_frequency_rad_s: float = 0.02
+    max_attacker_maneuver_frequency_rad_s: float = 0.08
     defender_ring_radius_m: float = 120.0
     defender_max_speed_mps: float = 45.0
     defender_max_accel_mps2: float = 15.0
@@ -64,6 +76,15 @@ class Attacker:
     alive: bool = True
     killed: bool = False
     breached: bool = False
+    wave_id: int = 0
+    spawn_time_s: float = 0.0
+    active: bool = True
+    maneuver_amplitude_mps: float = 0.0
+    maneuver_frequency_rad_s: float = 0.0
+    maneuver_phase_rad: float = 0.0
+    maneuver_secondary_phase_rad: float = 0.0
+    killed_time_s: float | None = None
+    breach_time_s: float | None = None
 
     def copy(self) -> "Attacker":
         return Attacker(
@@ -75,6 +96,15 @@ class Attacker:
             alive=self.alive,
             killed=self.killed,
             breached=self.breached,
+            wave_id=self.wave_id,
+            spawn_time_s=self.spawn_time_s,
+            active=self.active,
+            maneuver_amplitude_mps=self.maneuver_amplitude_mps,
+            maneuver_frequency_rad_s=self.maneuver_frequency_rad_s,
+            maneuver_phase_rad=self.maneuver_phase_rad,
+            maneuver_secondary_phase_rad=self.maneuver_secondary_phase_rad,
+            killed_time_s=self.killed_time_s,
+            breach_time_s=self.breach_time_s,
         )
 
 
@@ -117,11 +147,13 @@ class Observation:
 
 
 @dataclass(frozen=True)
-class RunResult:
+class WaveResult:
     run_id: int
     scenario_seed: int
     strategy: str
     defender_count: int
+    wave_id: int
+    spawn_time_s: float
     attacker_count: int
     kills: int
     breaches: int
@@ -140,6 +172,43 @@ class RunResult:
         if self.attacker_count == 0:
             return 0.0
         return self.breaches / self.attacker_count
+
+
+@dataclass(frozen=True)
+class RunResult:
+    run_id: int
+    scenario_seed: int
+    strategy: str
+    defender_count: int
+    attacker_count: int
+    wave_count: int
+    kills: int
+    breaches: int
+    success: bool
+    completion_time_s: float
+    first_breach_time_s: float | None = None
+    duplicate_target_assignments: int = 0
+    total_assignments: int = 0
+    max_simultaneous_defenders_on_target: int = 0
+    wave_results: tuple[WaveResult, ...] = field(default_factory=tuple)
+
+    @property
+    def kill_ratio(self) -> float:
+        if self.attacker_count == 0:
+            return 0.0
+        return self.kills / self.attacker_count
+
+    @property
+    def breach_rate(self) -> float:
+        if self.attacker_count == 0:
+            return 0.0
+        return self.breaches / self.attacker_count
+
+    @property
+    def contention_rate(self) -> float:
+        if self.total_assignments == 0:
+            return 0.0
+        return self.duplicate_target_assignments / self.total_assignments
 
     @property
     def attacker_bucket(self) -> str:

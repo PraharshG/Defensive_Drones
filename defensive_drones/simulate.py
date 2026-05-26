@@ -50,6 +50,7 @@ def run_monte_carlo(
                         scenario_seed,
                         cell_result.defender_count,
                         cell_result.attacker_count,
+                        cell_result.wave_count,
                     )
                     results.extend(cell_result.results)
                     for result in cell_result.results:
@@ -101,6 +102,7 @@ class ScenarioCellResult:
     scenario_seed: int
     defender_count: int
     attacker_count: int
+    wave_count: int
     results: list[RunResult]
 
 
@@ -127,6 +129,7 @@ def _run_scenario_cell(
         scenario_seed=scenario_seed,
         defender_count=defender_count,
         attacker_count=len(scenario.attackers),
+        wave_count=len({attacker.wave_id for attacker in scenario.attackers}),
         results=scenario_results,
     )
 
@@ -183,13 +186,14 @@ def _print_console_summary(
     print(f"Run status log: {log_path}")
     print(
         "strategy, defenders, attackers, runs, success_rate, avg_kills, "
-        "avg_breaches, avg_breach_rate"
+        "avg_breaches, avg_breach_rate, avg_contention_rate"
     )
     for row in summarize_results(results):
         print(
             f"{row['strategy']}, {row['defender_count']}, {row['attacker_bucket']}, "
             f"{row['runs']}, {row['success_rate']}, {row['avg_kills']}, "
-            f"{row['avg_breaches']}, {row['avg_breach_rate']}"
+            f"{row['avg_breaches']}, {row['avg_breach_rate']}, "
+            f"{row['avg_contention_rate']}"
         )
 
 
@@ -233,6 +237,7 @@ class RunStatusLogger:
             scenario_seed,
             len(scenario.defenders),
             len(scenario.attackers),
+            len({attacker.wave_id for attacker in scenario.attackers}),
         )
 
     def scenario_started_counts(
@@ -241,11 +246,13 @@ class RunStatusLogger:
         scenario_seed: int,
         defender_count: int,
         attacker_count: int,
+        wave_count: int,
     ) -> None:
         self._write(
             "SCENARIO_START "
             f"run_id={run_id} scenario_seed={scenario_seed} "
-            f"defenders={defender_count} attackers={attacker_count}"
+            f"defenders={defender_count} attackers={attacker_count} "
+            f"waves={wave_count}"
         )
 
     def scenario_cell_queued(
@@ -262,8 +269,11 @@ class RunStatusLogger:
             "STRATEGY_DONE "
             f"run_id={result.run_id} strategy={result.strategy} "
             f"defenders={result.defender_count} attackers={result.attacker_count} "
+            f"waves={result.wave_count} "
             f"kills={result.kills} breaches={result.breaches} "
             f"breach_rate={result.breach_rate:.4f} "
+            f"contention_rate={result.contention_rate:.4f} "
+            f"max_target_contention={result.max_simultaneous_defenders_on_target} "
             f"success={int(result.success)} "
             f"completion_time_s={result.completion_time_s:.2f} "
             f"first_breach_time_s={_format_optional_seconds(result.first_breach_time_s)}"

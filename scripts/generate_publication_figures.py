@@ -73,6 +73,11 @@ ATTACKER_BUCKET_ORDER = [
     "275-299",
     "300-324",
     "325-350",
+    "500-599",
+    "600-700",
+    "750-849",
+    "850-949",
+    "950-1050",
 ]
 PALETTE = {
     "optimized_global": "#0072B2",
@@ -94,6 +99,7 @@ class Result:
     strategy: str
     defender_count: int
     attacker_count: int
+    wave_count: int
     attacker_bucket: str
     kills: int
     breaches: int
@@ -102,6 +108,8 @@ class Result:
     kill_ratio: float
     breach_rate: float
     first_breach_time_s: float | None
+    contention_rate: float
+    max_simultaneous_defenders_on_target: int
 
 
 @dataclass(frozen=True)
@@ -171,6 +179,7 @@ def load_results(path: Path) -> list[Result]:
             strategy=row["strategy"],
             defender_count=int(row["defender_count"]),
             attacker_count=int(row["attacker_count"]),
+            wave_count=int(row.get("wave_count", 1)),
             attacker_bucket=row["attacker_bucket"],
             kills=int(row["kills"]),
             breaches=int(row["breaches"]),
@@ -182,6 +191,10 @@ def load_results(path: Path) -> list[Result]:
                 float(row["first_breach_time_s"])
                 if row.get("first_breach_time_s")
                 else None
+            ),
+            contention_rate=float(row.get("contention_rate", 0.0)),
+            max_simultaneous_defenders_on_target=int(
+                row.get("max_simultaneous_defenders_on_target", 0)
             ),
         )
         for row in rows
