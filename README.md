@@ -292,7 +292,7 @@ python -m defensive_drones.simulate --runs 10 --seed 42 --out outputs_smoke
 Check out this branch and run the server script:
 
 ```bash
-git checkout praharsh_dev_v3
+git checkout praharsh_dev_v4
 RUNS=1000 JOBS=$(nproc) OUT_DIR=outputs_server bash scripts/run_server_simulation.sh
 ```
 
@@ -359,6 +359,9 @@ Then regenerate publication figures with:
 ```bash
 .venv/bin/python scripts/generate_publication_figures.py --input outputs/per_run_results.csv --out outputs/publication_figures
 ```
+
+The publication generator writes both the legacy summary figure set and the
+curated policy-analysis figure set as PNG and PDF files.
 
 The baseline now evaluates 2-3 waves of 250-350 attackers each, 10-100
 defenders in steps of 10, and records success/kill, pass-through, per-wave, and

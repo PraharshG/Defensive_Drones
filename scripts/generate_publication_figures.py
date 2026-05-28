@@ -114,7 +114,7 @@ class Result:
 
 @dataclass(frozen=True)
 class FigureRecord:
-    number: int
+    number: int | str
     filename: str
     title: str
     message: str
@@ -128,12 +128,18 @@ def main() -> int:
     configure_matplotlib()
 
     figure_records = [
-        plot_assignment_flexibility_uplift(results, output_dir, 1),
-        plot_capability_envelope(results, output_dir, 2),
-        plot_defender_resource_scaling(results, output_dir, 3),
-        plot_paired_scenario_conversion_matrix(results, output_dir, 4),
-        plot_attacker_load_cliff(results, output_dir, 5),
-        plot_residual_failure_space(results, output_dir, 6),
+        plot_success_rate_by_strategy(results, output_dir, "L1"),
+        plot_mean_kill_ratio_by_strategy(results, output_dir, "L2"),
+        plot_mean_kills_by_strategy(results, output_dir, "L3"),
+        plot_success_by_defender_count(results, output_dir, "L4"),
+        plot_success_by_attacker_bucket(results, output_dir, "L5"),
+        plot_success_heatmap(results, output_dir, "L6"),
+        plot_assignment_flexibility_uplift(results, output_dir, "C1"),
+        plot_capability_envelope(results, output_dir, "C2"),
+        plot_defender_resource_scaling(results, output_dir, "C3"),
+        plot_paired_scenario_conversion_matrix(results, output_dir, "C4"),
+        plot_attacker_load_cliff(results, output_dir, "C5"),
+        plot_residual_failure_space(results, output_dir, "C6"),
         plot_kill_ratio_distribution(results, output_dir, 7),
         plot_terminal_time_distribution(results, output_dir, 8),
         plot_global_vs_corridor_success_uplift(results, output_dir, 9),
@@ -306,8 +312,133 @@ def annotate_bars(ax: plt.Axes, values: list[float], percent: bool = False) -> N
         )
 
 
+def plot_success_rate_by_strategy(
+    results: list[Result], output_dir: Path, number: int | str
+) -> FigureRecord:
+    grouped = group_by_strategy(results)
+    strategies = ordered_strategies(results)
+    rates = [rate(grouped[strategy]) for strategy in strategies]
+    intervals = [
+        wilson_interval(
+            sum(result.success for result in grouped[strategy]),
+            len(grouped[strategy]),
+        )
+        for strategy in strategies
+    ]
+    yerr = np.array(
+        [
+            [value - low for value, (low, _) in zip(rates, intervals)],
+            [high - value for value, (_, high) in zip(rates, intervals)],
+        ]
+    )
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.2))
+    x = np.arange(len(strategies))
+    ax.bar(
+        x,
+        rates,
+        yerr=yerr,
+        capsize=4,
+        color=[PALETTE[strategy] for strategy in strategies],
+        edgecolor="#222222",
+        linewidth=0.5,
+    )
+    ax.set_title("Mission Success Rate by Strategy")
+    ax.set_ylabel("Success rate")
+    ax.set_ylim(0.0, max(1.0, max(rates) * 1.35) if rates else 1.0)
+    ax.set_xticks(x, [STRATEGY_LABELS[strategy] for strategy in strategies])
+    annotate_bars(ax, rates, percent=True)
+    filename = save_figure(fig, output_dir, "01_success_rate_by_strategy")
+    return FigureRecord(
+        number,
+        filename,
+        "Mission success rate by strategy",
+        "Shows which strategy most often kills all attackers before breach.",
+    )
+
+
+def plot_mean_kill_ratio_by_strategy(
+    results: list[Result], output_dir: Path, number: int | str
+) -> FigureRecord:
+    grouped = group_by_strategy(results)
+    strategies = ordered_strategies(results)
+    values = [
+        mean([result.kill_ratio for result in grouped[strategy]])
+        for strategy in strategies
+    ]
+    errors = [
+        1.96 * standard_error(
+            [result.kill_ratio for result in grouped[strategy]]
+        )
+        for strategy in strategies
+    ]
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.2))
+    x = np.arange(len(strategies))
+    ax.bar(
+        x,
+        values,
+        yerr=errors,
+        capsize=4,
+        color=[PALETTE[strategy] for strategy in strategies],
+        edgecolor="#222222",
+        linewidth=0.5,
+    )
+    ax.set_title("Average Fraction of Attackers Killed")
+    ax.set_ylabel("Mean kill ratio")
+    ax.set_ylim(0.0, max(1.0, min(1.0, max(values) * 1.22)) if values else 1.0)
+    ax.set_xticks(x, [STRATEGY_LABELS[strategy] for strategy in strategies])
+    annotate_bars(ax, values)
+    filename = save_figure(fig, output_dir, "02_mean_kill_ratio_by_strategy")
+    return FigureRecord(
+        number,
+        filename,
+        "Average fraction of attackers killed",
+        "Normalizes kills by scenario size so mixed attacker counts can be compared.",
+    )
+
+
+def plot_mean_kills_by_strategy(
+    results: list[Result], output_dir: Path, number: int | str
+) -> FigureRecord:
+    grouped = group_by_strategy(results)
+    strategies = ordered_strategies(results)
+    values = [
+        mean([result.kills for result in grouped[strategy]])
+        for strategy in strategies
+    ]
+    errors = [
+        1.96 * standard_error([result.kills for result in grouped[strategy]])
+        for strategy in strategies
+    ]
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.2))
+    x = np.arange(len(strategies))
+    ax.bar(
+        x,
+        values,
+        yerr=errors,
+        capsize=4,
+        color=[PALETTE[strategy] for strategy in strategies],
+        edgecolor="#222222",
+        linewidth=0.5,
+    )
+    ax.set_title("Average Attackers Killed per Scenario")
+    ax.set_ylabel("Mean kills")
+    ax.set_ylim(0.0, max(1.0, max(values) * 1.22) if values else 1.0)
+    ax.set_xticks(x, [STRATEGY_LABELS[strategy] for strategy in strategies])
+    annotate_bars(ax, values)
+    filename = save_figure(fig, output_dir, "03_mean_kills_by_strategy")
+    return FigureRecord(
+        number,
+        filename,
+        "Average attackers killed per scenario",
+        "Reports the absolute number of intercepted attackers before breach.",
+    )
+
+
 def plot_assignment_flexibility_uplift(
-    results: list[Result], output_dir: Path, number: int
+    results: list[Result], output_dir: Path, number: int | str
 ) -> FigureRecord:
     grouped = group_by_strategy(results)
     strategies = [
@@ -679,7 +810,7 @@ def plot_defender_resource_scaling(
 
 
 def plot_success_by_defender_count(
-    results: list[Result], output_dir: Path, number: int
+    results: list[Result], output_dir: Path, number: int | str
 ) -> FigureRecord:
     strategies = ordered_strategies(results)
     defender_counts = sorted({result.defender_count for result in results})
@@ -716,6 +847,117 @@ def plot_success_by_defender_count(
         filename,
         "Success rate by defender count",
         "Shows how added defensive assets change mission outcomes.",
+    )
+
+
+def plot_success_by_attacker_bucket(
+    results: list[Result], output_dir: Path, number: int | str
+) -> FigureRecord:
+    strategies = ordered_strategies(results)
+    attacker_buckets = attacker_buckets_for(results)
+    x = np.arange(len(attacker_buckets))
+    width = min(0.8 / max(len(strategies), 1), 0.12)
+    offsets = np.linspace(
+        -width * (len(strategies) - 1) / 2.0,
+        width * (len(strategies) - 1) / 2.0,
+        len(strategies),
+    )
+
+    fig, ax = plt.subplots(figsize=(9, 5.2))
+    for offset, strategy in zip(offsets, strategies):
+        values = [
+            rate(
+                [
+                    result
+                    for result in results
+                    if result.strategy == strategy
+                    and result.attacker_bucket == bucket
+                ]
+            )
+            for bucket in attacker_buckets
+        ]
+        ax.bar(
+            x + offset,
+            values,
+            width=width,
+            color=PALETTE[strategy],
+            label=SHORT_LABELS[strategy],
+            edgecolor="#222222",
+            linewidth=0.4,
+        )
+    ax.set_title("Success Rate Falls as Attacker Load Increases")
+    ax.set_xlabel("Attack drone count")
+    ax.set_ylabel("Success rate")
+    ax.set_xticks(x, attacker_buckets)
+    ax.set_ylim(0.0, 1.0)
+    ax.legend(ncol=2, frameon=False, loc="upper right")
+    filename = save_figure(fig, output_dir, "05_success_rate_by_attacker_load")
+    return FigureRecord(
+        number,
+        filename,
+        "Success rate by attacker load",
+        "Compares strategy robustness as attacker counts grow.",
+    )
+
+
+def plot_success_heatmap(
+    results: list[Result], output_dir: Path, number: int | str
+) -> FigureRecord:
+    strategies = ordered_strategies(results)
+    defender_counts = sorted({result.defender_count for result in results})
+    attacker_buckets = attacker_buckets_for(results)
+    columns = [
+        (defender_count, bucket)
+        for defender_count in defender_counts
+        for bucket in attacker_buckets
+    ]
+    matrix = []
+    for strategy in strategies:
+        row = []
+        for defender_count, bucket in columns:
+            row.append(
+                rate(
+                    [
+                        result
+                        for result in results
+                        if result.strategy == strategy
+                        and result.defender_count == defender_count
+                        and result.attacker_bucket == bucket
+                    ]
+                )
+            )
+        matrix.append(row)
+
+    fig, ax = plt.subplots(figsize=(11, 5.2))
+    image = ax.imshow(matrix, aspect="auto", cmap="YlGnBu", vmin=0.0, vmax=1.0)
+    ax.set_title("Success Rate by Strategy, Defender Count, and Attacker Load")
+    ax.set_yticks(
+        np.arange(len(strategies)),
+        [SHORT_LABELS[strategy] for strategy in strategies],
+    )
+    ax.set_xticks(
+        np.arange(len(columns)),
+        [f"D{defenders}\nA{bucket}" for defenders, bucket in columns],
+    )
+    for row_idx, row in enumerate(matrix):
+        for col_idx, value in enumerate(row):
+            ax.text(
+                col_idx,
+                row_idx,
+                f"{value * 100:.0f}%",
+                ha="center",
+                va="center",
+                color="#111111" if value < 0.55 else "white",
+                fontsize=7,
+            )
+    cbar = fig.colorbar(image, ax=ax, fraction=0.025, pad=0.02)
+    cbar.set_label("Success rate")
+    filename = save_figure(fig, output_dir, "06_success_rate_heatmap")
+    return FigureRecord(
+        number,
+        filename,
+        "Success heatmap",
+        "Identifies operating regimes where each strategy is viable.",
     )
 
 
@@ -1297,7 +1539,7 @@ def plot_global_vs_corridor_success_uplift(
     ax.set_ylabel("Success rate")
     ax.set_xticks(x, [PAIR_LABELS[strategy] for strategy in base_strategies])
     all_rates = global_rates + corridor_rates + collab_rates
-    ax.set_ylim(0.0, max(all_rates) * 1.45 if all_rates else 1.0)
+    ax.set_ylim(0.0, max(1.0, max(all_rates) * 1.45) if all_rates else 1.0)
     ax.legend(frameon=False)
     filename = save_figure(fig, output_dir, "09_global_vs_corridor_success_uplift")
     return FigureRecord(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import subprocess
+import sys
 import tempfile
 import unittest
 from collections import Counter
@@ -808,6 +810,55 @@ class OutputSmokeTests(unittest.TestCase):
             self.assertIn("SCENARIO_START run_id=0", log_text)
             self.assertIn("STRATEGY_DONE run_id=0", log_text)
             self.assertIn(f"FINISH strategy_runs={5 * len(STRATEGIES)}", log_text)
+
+    def test_publication_generator_writes_legacy_and_curated_figures(self) -> None:
+        config = SimulationConfig(
+            min_defenders=2,
+            max_defenders=2,
+            min_attackers=5,
+            max_attackers=5,
+            min_waves=1,
+            max_waves=1,
+            min_spawn_distance_m=30.0,
+            max_spawn_distance_m=30.0,
+            min_attacker_speed_mps=20.0,
+            max_attacker_speed_mps=20.0,
+            dt_s=1.0,
+            sensor_position_sigma_m=0.0,
+            sensor_velocity_sigma_mps=0.0,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            run_monte_carlo(runs=2, seed=7, out_dir=out_dir, config=config)
+
+            publication_dir = out_dir / "publication_figures"
+            subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/generate_publication_figures.py",
+                    "--input",
+                    str(out_dir / "per_run_results.csv"),
+                    "--out",
+                    str(publication_dir),
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+
+            png_files = list(publication_dir.glob("*.png"))
+            pdf_files = list(publication_dir.glob("*.pdf"))
+            self.assertEqual(len(png_files), 16)
+            self.assertEqual(len(pdf_files), 16)
+            self.assertTrue(
+                (publication_dir / "01_success_rate_by_strategy.png").exists()
+            )
+            self.assertTrue(
+                (publication_dir / "01_assignment_flexibility_uplift.png").exists()
+            )
+            self.assertTrue((publication_dir / "06_success_rate_heatmap.png").exists())
+            self.assertTrue((publication_dir / "06_residual_failure_space.png").exists())
+            self.assertTrue((publication_dir / "figure_index.md").exists())
 
 
 def _observations_for(scenario: Scenario) -> dict[int, Observation]:
