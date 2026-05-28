@@ -13,20 +13,25 @@ intended for strategy comparison, not real flight control or weapons guidance.
 Each run creates one randomized 3D attack scenario:
 
 - 10-100 defensive drones protect a fixed target at `(0, 0, 0)`, evaluated in
-  steps of 10 defenders.
+  steps of 10 initial defenders.
 - Attack drones arrive in 2-3 waves. Each wave contains 250-350 attackers that
   spawn roughly 5 miles away, with randomized distance from 4.5-5.5 miles.
-- Attack drones are distributed across a wide positive-side hemisphere rather
-  than coming from one narrow approach area.
+- Attack drones are distributed across a full 360-degree sphere around the
+  target rather than coming from one narrow approach area.
+- Each attack drone aims at its own randomized point inside the target breach
+  radius around the center point.
 - Each attack drone has its own sampled speed from 18-25 m/s.
 - Attack drone velocity is stored as state and changes over time in all three
   dimensions through bounded target-seeking maneuvers.
-- Defensive drones start near the target on a defensive ring.
+- Defensive drones start near the target on a defensive ring. Later attack
+  waves add defender reinforcements equal to 50% of the initial defender count,
+  rounded up.
 - Defensive drones do not communicate with each other. Each defender makes an
   independent target choice from its own observations, so multiple defenders can
   pursue the same attacker.
-- Each defensive drone has an angular corridor label. Corridor strategies obey
-  those labels; global strategies ignore them; collaboration strategies use a
+- Each defensive drone has an angular corridor label. Corridor labels are
+  reassigned at wave starts based on live incoming attacker density; global
+  strategies ignore corridor labels; collaboration strategies use a
   corridor-first fallback rule when a defender has no local targets.
 
 The simulation has no hard time deadline. A run ends when all attack drones are
@@ -43,6 +48,7 @@ Each attack drone has:
 - velocity `v_a`
 - scalar speed
 - assigned corridor
+- sampled target point inside the breach radius
 - wave id and spawn time
 - live, killed, and breached status
 
@@ -51,10 +57,11 @@ Each defensive drone has:
 - position `p_d` in 3D
 - velocity `v_d`
 - assigned corridor
+- wave id, spawn time, and active status
 
-Attack drones maintain target-seeking radial progress while adding bounded
-lateral maneuver velocity. This makes `x`, `y`, and `z` velocity components vary
-over time:
+Attack drones maintain target-seeking radial progress toward their sampled
+target point while adding bounded lateral maneuver velocity. This makes `x`,
+`y`, and `z` velocity components vary over time:
 
 ```text
 v_a(t) = target_direction * base_speed + bounded_lateral_maneuver(t)
@@ -73,7 +80,7 @@ The controller chooses a desired velocity each time step, then clamps the
 velocity change by the acceleration limit and clamps final velocity by the max
 speed.
 
-### Corridors
+### Corridors And Reinforcements
 
 Corridors are angular sectors around the attack approach axis. The simulator
 uses the lateral `y-z` angle of each attacker position:
@@ -82,12 +89,22 @@ uses the lateral `y-z` angle of each attacker position:
 angle = atan2(z, y)
 ```
 
-The full circle is split into one sector per defender. Corridor-restricted
-strategies let each defender consider only attackers whose lateral angle falls
-in that defender's corridor. Global strategies let each defender consider every
-observed active attacker. Collaboration strategies first use the defender's own
-corridor and fall back to off-corridor targets only when the defender has no
-local candidates.
+The full circle is split into one sector per initial defender count. At each
+wave start, active defenders are reassigned to these fixed sectors based on live
+attacker density using proportional largest-remainder allocation. Non-empty
+corridors receive at least one defender when enough active defenders are
+available, and dense corridors receive multiple defenders.
+
+Wave 0 starts with the configured defender count. Each later wave activates a
+reinforcement batch equal to `ceil(initial_defender_count * 0.5)` by default.
+Existing defenders keep their current position and velocity when retasked; newly
+activated defenders spawn on the defensive ring for their assigned corridor.
+
+Corridor-restricted strategies let each active defender consider only attackers
+whose lateral angle falls in that defender's current corridor. Global strategies
+let each active defender consider every observed active attacker. Collaboration
+strategies first use the defender's own corridor and fall back to off-corridor
+targets only when the defender has no local candidates.
 
 ### Sensing
 
@@ -113,7 +130,8 @@ distance(defender, attacker) <= 5 m for 3.0 s
 The dwell timer resets if the defender leaves the 5 m radius before the 3-second
 requirement is met.
 
-An attack drone is counted as a breach when it reaches the target breach radius:
+An attack drone is counted as a breach when it reaches the center target breach
+radius, even though it steers toward its own sampled point inside that radius:
 
 ```text
 distance(attacker, target) <= 5 m

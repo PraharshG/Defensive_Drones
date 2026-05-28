@@ -39,6 +39,8 @@ def choose_assignments(
         return assignments
 
     for defender in scenario.defenders:
+        if not defender.active:
+            continue
         held_target = _held_target(
             defender,
             scenario,
@@ -88,6 +90,8 @@ def _held_target(
     dwell_times: np.ndarray,
     assignment_mode: str,
 ) -> int | None:
+    if not defender.active:
+        return None
     attacker_id = previous_assignments.get(defender.id)
     if attacker_id is None or attacker_id not in observations:
         return None
@@ -115,12 +119,14 @@ class ObservedAttackers:
         corridors: np.ndarray,
         positions: np.ndarray,
         velocities: np.ndarray,
+        target_points: np.ndarray,
         deadlines_s: np.ndarray,
     ) -> None:
         self.ids = ids
         self.corridors = corridors
         self.positions = positions
         self.velocities = velocities
+        self.target_points = target_points
         self.deadlines_s = deadlines_s
 
 
@@ -141,12 +147,25 @@ def _observed_arrays(
     corridors = np.array([attacker.corridor for attacker in attackers], dtype=int)
     positions = np.array([observations[attacker.id].position for attacker in attackers])
     velocities = np.array([observations[attacker.id].velocity for attacker in attackers])
+    target_points = np.array(
+        [
+            attacker.target_point if attacker.target_point is not None else config.target_vector
+            for attacker in attackers
+        ],
+        dtype=float,
+    )
     speeds = np.linalg.norm(velocities, axis=1)
-    target = config.target_vector
     with np.errstate(divide="ignore", invalid="ignore"):
-        deadlines_s = np.linalg.norm(positions - target, axis=1) / speeds
+        deadlines_s = np.linalg.norm(positions - target_points, axis=1) / speeds
     deadlines_s = np.where(np.isfinite(deadlines_s), deadlines_s, np.inf)
-    return ObservedAttackers(ids, corridors, positions, velocities, deadlines_s)
+    return ObservedAttackers(
+        ids,
+        corridors,
+        positions,
+        velocities,
+        target_points,
+        deadlines_s,
+    )
 
 
 def _choose_target_for_defender(

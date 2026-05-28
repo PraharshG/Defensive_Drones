@@ -3,14 +3,17 @@ from __future__ import annotations
 import csv
 import tempfile
 import unittest
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
 from defensive_drones.engine import (
+    activate_defenders,
     activate_attackers,
     observe_attackers,
+    rebalance_defender_corridors,
     simulate_scenario,
     update_attacker_velocities,
     update_dwell_and_kills,
@@ -94,7 +97,7 @@ class ScenarioGenerationTests(unittest.TestCase):
             all(not attacker.active for attacker in scenario.attackers if attacker.wave_id > 0)
         )
 
-    def test_wide_hemisphere_spawn_spreads_attackers_across_corridors(self) -> None:
+    def test_full_sphere_spawn_spreads_attackers_across_corridors(self) -> None:
         config = SimulationConfig(
             min_attackers=350,
             max_attackers=350,
@@ -103,11 +106,77 @@ class ScenarioGenerationTests(unittest.TestCase):
         )
         scenario = generate_scenario(2027, config, defender_count=10)
 
-        self.assertTrue(all(attacker.position[0] >= 0.0 for attacker in scenario.attackers))
+        self.assertTrue(any(attacker.position[0] < 0.0 for attacker in scenario.attackers))
+        self.assertTrue(any(attacker.position[0] > 0.0 for attacker in scenario.attackers))
         self.assertGreaterEqual(
             len({attacker.corridor for attacker in scenario.attackers}),
             8,
         )
+
+    def test_attackers_target_random_points_inside_breach_radius(self) -> None:
+        config = SimulationConfig(
+            min_attackers=50,
+            max_attackers=50,
+            min_waves=1,
+            max_waves=1,
+            target_breach_radius_m=25.0,
+        )
+        scenario = generate_scenario(2031, config, defender_count=5)
+        target = config.target_vector
+
+        for attacker in scenario.attackers:
+            self.assertIsNotNone(attacker.target_point)
+            self.assertLessEqual(norm(attacker.target_point - target), 25.0)
+
+    def test_defender_reinforcements_activate_with_their_wave(self) -> None:
+        config = SimulationConfig(
+            min_attackers=1,
+            max_attackers=1,
+            min_waves=3,
+            max_waves=3,
+            wave_spacing_s=10.0,
+            defender_reinforcement_fraction=0.5,
+        )
+        scenario = generate_scenario(2032, config, defender_count=4)
+
+        self.assertEqual(len(scenario.defenders), 8)
+        self.assertEqual(
+            [defender.id for defender in scenario.defenders if defender.active],
+            [0, 1, 2, 3],
+        )
+        self.assertEqual(activate_defenders(scenario, 9.99), [])
+        self.assertEqual(activate_defenders(scenario, 10.0), [4, 5])
+        self.assertTrue(scenario.defenders[4].active)
+        self.assertTrue(scenario.defenders[5].active)
+
+    def test_density_rebalance_assigns_more_defenders_to_dense_corridors(self) -> None:
+        config = SimulationConfig()
+        scenario = Scenario(
+            seed=2033,
+            initial_defender_count=4,
+            defenders=[
+                Defender(index, np.zeros(3), np.zeros(3), index)
+                for index in range(4)
+            ],
+            attackers=[
+                Attacker(
+                    id=index,
+                    position=np.zeros(3),
+                    velocity=np.zeros(3),
+                    speed_mps=0.0,
+                    corridor=0 if index < 5 else 1,
+                )
+                for index in range(6)
+            ],
+        )
+
+        rebalance_defender_corridors(scenario, config)
+
+        defender_counts = Counter(defender.corridor for defender in scenario.defenders)
+        self.assertEqual(defender_counts[0], 3)
+        self.assertEqual(defender_counts[1], 1)
+        self.assertEqual(defender_counts[2], 0)
+        self.assertEqual(defender_counts[3], 0)
 
     def test_same_seed_reuses_attacker_swarm_across_defender_counts(self) -> None:
         config = SimulationConfig(
@@ -357,6 +426,59 @@ class SimulationMechanicsTests(unittest.TestCase):
         self.assertEqual(result.total_assignments, 2)
         self.assertEqual(result.contention_rate, 0.5)
         self.assertEqual(result.max_simultaneous_defenders_on_target, 2)
+
+    def test_inactive_defenders_are_not_assigned_or_counted_for_kills(self) -> None:
+        config = replace(
+            SimulationConfig(),
+            dt_s=1.0,
+            kill_radius_m=5.0,
+            kill_dwell_s=1.0,
+            sensor_position_sigma_m=0.0,
+            sensor_velocity_sigma_mps=0.0,
+        )
+        scenario = Scenario(
+            seed=11,
+            initial_defender_count=2,
+            defenders=[
+                Defender(
+                    id=0,
+                    position=np.zeros(3),
+                    velocity=np.zeros(3),
+                    corridor=0,
+                    wave_id=1,
+                    spawn_time_s=10.0,
+                    active=False,
+                ),
+                Defender(
+                    id=1,
+                    position=np.array([100.0, 0.0, 0.0]),
+                    velocity=np.zeros(3),
+                    corridor=0,
+                ),
+            ],
+            attackers=[
+                Attacker(
+                    id=0,
+                    position=np.zeros(3),
+                    velocity=np.zeros(3),
+                    speed_mps=0.0,
+                    corridor=0,
+                )
+            ],
+        )
+        observations = _observations_for(scenario)
+        dwell = np.zeros((2, 1), dtype=float)
+
+        assignment = choose_assignments(
+            "nearest", scenario, observations, config, {}, dwell
+        )
+        killed_ids = update_dwell_and_kills(scenario, dwell, config)
+
+        self.assertNotIn(0, assignment)
+        self.assertEqual(assignment, {1: 0})
+        self.assertEqual(killed_ids, [])
+        self.assertTrue(scenario.attackers[0].alive)
+        self.assertEqual(dwell[0, 0], 0.0)
 
 
 class StrategyTests(unittest.TestCase):

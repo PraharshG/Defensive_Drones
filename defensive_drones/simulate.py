@@ -10,7 +10,12 @@ from typing import TextIO
 import numpy as np
 
 from defensive_drones.engine import simulate_scenario
-from defensive_drones.model import RunResult, Scenario, SimulationConfig
+from defensive_drones.model import (
+    RunResult,
+    Scenario,
+    SimulationConfig,
+    initial_defender_count_for_scenario,
+)
 from defensive_drones.reporting import summarize_results, write_outputs
 from defensive_drones.scenario import generate_scenario
 from defensive_drones.strategies import STRATEGIES
@@ -49,6 +54,7 @@ def run_monte_carlo(
                         run_id,
                         scenario_seed,
                         cell_result.defender_count,
+                        cell_result.total_defender_count,
                         cell_result.attacker_count,
                         cell_result.wave_count,
                     )
@@ -101,6 +107,7 @@ class ScenarioCellResult:
     run_id: int
     scenario_seed: int
     defender_count: int
+    total_defender_count: int
     attacker_count: int
     wave_count: int
     results: list[RunResult]
@@ -127,7 +134,8 @@ def _run_scenario_cell(
     return ScenarioCellResult(
         run_id=run_id,
         scenario_seed=scenario_seed,
-        defender_count=defender_count,
+        defender_count=initial_defender_count_for_scenario(scenario),
+        total_defender_count=len(scenario.defenders),
         attacker_count=len(scenario.attackers),
         wave_count=len({attacker.wave_id for attacker in scenario.attackers}),
         results=scenario_results,
@@ -235,6 +243,7 @@ class RunStatusLogger:
         self.scenario_started_counts(
             run_id,
             scenario_seed,
+            initial_defender_count_for_scenario(scenario),
             len(scenario.defenders),
             len(scenario.attackers),
             len({attacker.wave_id for attacker in scenario.attackers}),
@@ -245,13 +254,15 @@ class RunStatusLogger:
         run_id: int,
         scenario_seed: int,
         defender_count: int,
+        total_defender_count: int,
         attacker_count: int,
         wave_count: int,
     ) -> None:
         self._write(
             "SCENARIO_START "
             f"run_id={run_id} scenario_seed={scenario_seed} "
-            f"defenders={defender_count} attackers={attacker_count} "
+            f"defenders={defender_count} total_defenders={total_defender_count} "
+            f"attackers={attacker_count} "
             f"waves={wave_count}"
         )
 
@@ -268,7 +279,9 @@ class RunStatusLogger:
         self._write(
             "STRATEGY_DONE "
             f"run_id={result.run_id} strategy={result.strategy} "
-            f"defenders={result.defender_count} attackers={result.attacker_count} "
+            f"defenders={result.defender_count} "
+            f"total_defenders={result.total_defender_count} "
+            f"attackers={result.attacker_count} "
             f"waves={result.wave_count} "
             f"kills={result.kills} breaches={result.breaches} "
             f"breach_rate={result.breach_rate:.4f} "
@@ -287,10 +300,15 @@ class RunStatusLogger:
         defender_count = (
             scenario_results[0].defender_count if scenario_results else "unknown"
         )
+        total_defender_count = (
+            scenario_results[0].total_defender_count
+            if scenario_results
+            else "unknown"
+        )
         self._write(
             "SCENARIO_DONE "
             f"run_id={run_id} strategy_runs={len(scenario_results)} "
-            f"defenders={defender_count} "
+            f"defenders={defender_count} total_defenders={total_defender_count} "
             f"successful_strategies={successes} best_kills={best_kills}"
         )
 

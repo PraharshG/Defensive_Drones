@@ -11,6 +11,11 @@ from defensive_drones.model import (
     Scenario,
     SimulationConfig,
     WaveResult,
+    initial_defender_count_for_scenario,
+)
+from defensive_drones.scenario import (
+    allocate_defenders_by_density,
+    defender_position_for_corridor,
 )
 from defensive_drones.strategies import choose_assignments
 
@@ -29,9 +34,20 @@ def simulate_scenario(
     elapsed_s = 0.0
     first_breach_time_s: float | None = None
     contention_tracker = AssignmentContentionTracker()
+    needs_corridor_rebalance = True
 
     while True:
-        activate_attackers(scenario, elapsed_s)
+        activated_attackers = activate_attackers(scenario, elapsed_s)
+        activated_defenders = activate_defenders(scenario, elapsed_s)
+        if needs_corridor_rebalance or activated_attackers or activated_defenders:
+            rebalance_defender_corridors(
+                scenario,
+                config,
+                newly_activated_defender_ids=activated_defenders,
+            )
+            assignments = {}
+            needs_corridor_rebalance = False
+
         if all(not attacker.alive for attacker in scenario.attackers):
             success = all(not attacker.breached for attacker in scenario.attackers)
             return _result(
@@ -51,7 +67,7 @@ def simulate_scenario(
             assignments = {}
             for defender in scenario.defenders:
                 defender.velocity = np.zeros(3, dtype=float)
-            activate_attackers(scenario, elapsed_s)
+            needs_corridor_rebalance = True
             continue
 
         observations = observe_attackers(scenario, config, rng)
@@ -106,6 +122,58 @@ def activate_attackers(scenario: Scenario, elapsed_s: float) -> list[int]:
     return activated
 
 
+def activate_defenders(scenario: Scenario, elapsed_s: float) -> list[int]:
+    activated: list[int] = []
+    for defender in scenario.defenders:
+        if not defender.active and elapsed_s >= defender.spawn_time_s:
+            defender.active = True
+            activated.append(defender.id)
+    return activated
+
+
+def rebalance_defender_corridors(
+    scenario: Scenario,
+    config: SimulationConfig,
+    newly_activated_defender_ids: list[int] | None = None,
+) -> None:
+    active_defenders = sorted(
+        (defender for defender in scenario.defenders if defender.active),
+        key=lambda defender: defender.id,
+    )
+    if not active_defenders:
+        return
+
+    corridor_count = initial_defender_count_for_scenario(scenario)
+    if corridor_count <= 0:
+        return
+
+    attacker_counts = [0] * corridor_count
+    for attacker in scenario.attackers:
+        if (
+            attacker.alive
+            and attacker.active
+            and 0 <= attacker.corridor < corridor_count
+        ):
+            attacker_counts[attacker.corridor] += 1
+
+    allocation = allocate_defenders_by_density(len(active_defenders), attacker_counts)
+    corridor_assignments = [
+        corridor
+        for corridor, count in enumerate(allocation)
+        for _ in range(count)
+    ]
+    newly_activated = set(newly_activated_defender_ids or [])
+    for defender, corridor in zip(active_defenders, corridor_assignments):
+        defender.corridor = corridor
+        if defender.id in newly_activated:
+            defender.position = defender_position_for_corridor(
+                corridor,
+                corridor_count,
+                config,
+            )
+            defender.velocity = np.zeros(3, dtype=float)
+
+
 def observe_attackers(
     scenario: Scenario,
     config: SimulationConfig,
@@ -138,30 +206,43 @@ def update_dwell_and_kills(
     inactive_ids = [
         attacker.id
         for attacker in scenario.attackers
-        if not attacker.alive or not attacker.active
+        if (not attacker.alive or not attacker.active)
+        and attacker.id < dwell_times.shape[1]
     ]
     if inactive_ids:
         dwell_times[:, inactive_ids] = 0.0
 
+    inactive_defender_ids = [
+        defender.id
+        for defender in scenario.defenders
+        if not defender.active and defender.id < dwell_times.shape[0]
+    ]
+    if inactive_defender_ids:
+        dwell_times[inactive_defender_ids, :] = 0.0
+
     live_attackers = [
         attacker for attacker in scenario.attackers if attacker.alive and attacker.active
     ]
-    if not live_attackers:
+    active_defenders = [defender for defender in scenario.defenders if defender.active]
+    if not live_attackers or not active_defenders:
         return []
 
     defender_positions = np.array(
-        [defender.position for defender in scenario.defenders], dtype=float
+        [defender.position for defender in active_defenders], dtype=float
     )
     attacker_positions = np.array(
         [attacker.position for attacker in live_attackers], dtype=float
+    )
+    active_defender_ids = np.array(
+        [defender.id for defender in active_defenders], dtype=int
     )
     live_ids = np.array([attacker.id for attacker in live_attackers], dtype=int)
     distances = np.linalg.norm(
         defender_positions[:, np.newaxis, :] - attacker_positions[np.newaxis, :, :],
         axis=2,
     )
-    live_dwell = dwell_times[:, live_ids]
-    dwell_times[:, live_ids] = np.where(
+    live_dwell = dwell_times[np.ix_(active_defender_ids, live_ids)]
+    dwell_times[np.ix_(active_defender_ids, live_ids)] = np.where(
         distances <= config.kill_radius_m,
         live_dwell + config.dt_s,
         0.0,
@@ -188,8 +269,10 @@ def _advance_defenders(
     assignments: dict[int, int],
     config: SimulationConfig,
 ) -> None:
-    target = config.target_vector
     for defender in scenario.defenders:
+        if not defender.active:
+            defender.velocity = np.zeros(3, dtype=float)
+            continue
         attacker_id = assignments.get(defender.id)
         observation = observations.get(attacker_id) if attacker_id is not None else None
         desired_velocity = np.zeros(3, dtype=float)
@@ -201,9 +284,20 @@ def _advance_defenders(
                 desired_velocity = observation.velocity + 0.8 * offset
             else:
                 lead_s = distance / max(config.defender_max_speed_mps, 1e-9)
+                target = _attacker_target_point(
+                    scenario.attackers[attacker_id],
+                    config,
+                )
                 lead_s = min(
                     lead_s,
-                    max(0.0, time_to_target(observation.position, observation.velocity, target)),
+                    max(
+                        0.0,
+                        time_to_target(
+                            observation.position,
+                            observation.velocity,
+                            target,
+                        ),
+                    ),
                 )
                 aim_point = observation.position + observation.velocity * lead_s
                 desired_velocity = unit(aim_point - defender.position) * (
@@ -219,7 +313,11 @@ def _advance_defenders(
         _apply_velocity_command(defender, desired_velocity, config)
 
 
-def _apply_velocity_command(defender, desired_velocity: np.ndarray, config: SimulationConfig) -> None:
+def _apply_velocity_command(
+    defender,
+    desired_velocity: np.ndarray,
+    config: SimulationConfig,
+) -> None:
     max_delta_v = config.defender_max_accel_mps2 * config.dt_s
     delta_v = desired_velocity - defender.velocity
     delta_v_norm = norm(delta_v)
@@ -249,10 +347,10 @@ def update_attacker_velocities(
     config: SimulationConfig,
     elapsed_s: float,
 ) -> None:
-    target = config.target_vector
     for attacker in scenario.attackers:
         if not attacker.alive or not attacker.active:
             continue
+        target = _attacker_target_point(attacker, config)
         to_target = target - attacker.position
         distance = norm(to_target)
         if distance <= 1e-9:
@@ -308,6 +406,12 @@ def _mark_breaches(
     return breached_ids
 
 
+def _attacker_target_point(attacker, config: SimulationConfig) -> np.ndarray:
+    if attacker.target_point is None:
+        return config.target_vector
+    return attacker.target_point
+
+
 def _result(
     run_id: int,
     scenario: Scenario,
@@ -324,7 +428,8 @@ def _result(
         run_id=run_id,
         scenario_seed=scenario.seed,
         strategy=strategy,
-        defender_count=len(scenario.defenders),
+        defender_count=initial_defender_count_for_scenario(scenario),
+        total_defender_count=len(scenario.defenders),
         attacker_count=len(scenario.attackers),
         wave_count=len(wave_results),
         kills=kills,
@@ -386,7 +491,7 @@ def _wave_results(
                 run_id=run_id,
                 scenario_seed=scenario.seed,
                 strategy=strategy,
-                defender_count=len(scenario.defenders),
+                defender_count=initial_defender_count_for_scenario(scenario),
                 wave_id=wave_id,
                 spawn_time_s=spawn_time_s,
                 attacker_count=len(wave_attackers),

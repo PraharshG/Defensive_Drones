@@ -35,8 +35,9 @@ class SimulationConfig:
     min_waves: int = 2
     max_waves: int = 3
     wave_spacing_s: float = 120.0
+    defender_reinforcement_fraction: float = 0.5
     target: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    approach_cone_degrees: float = 90.0
+    approach_cone_degrees: float = 180.0
     min_spawn_distance_m: float = 4.5 * MILE_TO_M
     max_spawn_distance_m: float = 5.5 * MILE_TO_M
     min_attacker_speed_mps: float = 18.0
@@ -85,6 +86,7 @@ class Attacker:
     maneuver_secondary_phase_rad: float = 0.0
     killed_time_s: float | None = None
     breach_time_s: float | None = None
+    target_point: Vector | None = None
 
     def copy(self) -> "Attacker":
         return Attacker(
@@ -105,6 +107,9 @@ class Attacker:
             maneuver_secondary_phase_rad=self.maneuver_secondary_phase_rad,
             killed_time_s=self.killed_time_s,
             breach_time_s=self.breach_time_s,
+            target_point=(
+                None if self.target_point is None else self.target_point.copy()
+            ),
         )
 
 
@@ -114,6 +119,9 @@ class Defender:
     position: Vector
     velocity: Vector
     corridor: int
+    wave_id: int = 0
+    spawn_time_s: float = 0.0
+    active: bool = True
 
     def copy(self) -> "Defender":
         return Defender(
@@ -121,6 +129,9 @@ class Defender:
             position=self.position.copy(),
             velocity=self.velocity.copy(),
             corridor=self.corridor,
+            wave_id=self.wave_id,
+            spawn_time_s=self.spawn_time_s,
+            active=self.active,
         )
 
 
@@ -129,12 +140,14 @@ class Scenario:
     seed: int
     defenders: list[Defender] = field(default_factory=list)
     attackers: list[Attacker] = field(default_factory=list)
+    initial_defender_count: int | None = None
 
     def copy(self) -> "Scenario":
         return Scenario(
             seed=self.seed,
             defenders=[defender.copy() for defender in self.defenders],
             attackers=[attacker.copy() for attacker in self.attackers],
+            initial_defender_count=self.initial_defender_count,
         )
 
 
@@ -180,6 +193,7 @@ class RunResult:
     scenario_seed: int
     strategy: str
     defender_count: int
+    total_defender_count: int
     attacker_count: int
     wave_count: int
     kills: int
@@ -228,3 +242,10 @@ def attacker_bucket_for_count(attacker_count: int) -> str:
 def attacker_bucket_sort_key(bucket: str) -> tuple[int, int]:
     lower, _, upper = bucket.partition("-")
     return int(lower), int(upper or lower)
+
+
+def initial_defender_count_for_scenario(scenario: Scenario) -> int:
+    if scenario.initial_defender_count is not None:
+        return scenario.initial_defender_count
+    initial_count = sum(1 for defender in scenario.defenders if defender.spawn_time_s <= 0.0)
+    return initial_count if initial_count > 0 else len(scenario.defenders)
